@@ -1,0 +1,23 @@
+{
+  "proxy_addr": "127.0.0.1:9090",
+  "admin_addr": "127.0.0.1:9091",
+  "services": [
+    {
+      "name": "github",
+      "host": "api.github.com",
+      "upstream_base": "https://api.github.com",
+      "flavor": "github",
+      "outbound": { "bearer": "github-app" }
+    },
+    {
+      "name": "openai",
+      "host": "api.openai.com",
+      "upstream_base": "https://api.openai.com",
+      "flavor": "generic",
+      "outbound": "passthrough"
+    }
+  ],
+  "credentials": {
+    "github-app": "ghs_REPLACE_WITH_REAL_INSTALLATION_TOKEN"
+  }
+}

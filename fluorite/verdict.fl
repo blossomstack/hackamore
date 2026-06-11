@@ -1,0 +1,47 @@
+/// The policy engine's decision for one `Action`, plus the obligations the data plane
+/// must fulfill. The engine only *names* credentials (via `CredentialRef`); resolving
+/// them to real secrets is the control plane's job, so the engine stays pure.
+package verdict;
+
+/// A credential the proxy must inject upstream. The agent never sees the resolved value.
+struct CredentialRef {
+    /// Logical credential id, resolved by the control plane's credential store.
+    id: String,
+}
+
+/// Why an action was denied — surfaced to the agent and recorded in the audit log.
+enum DenyReason {
+    /// No rule allowed the action (default-deny).
+    NotAllowed,
+    /// An explicit `Deny` rule matched.
+    ExplicitDeny,
+    /// The halter token was missing, unknown, or expired.
+    Unauthenticated,
+    /// The agent is authenticated but has no policy registered.
+    NoPolicy,
+    /// The request targets a host/path halter does not proxy.
+    UnknownTarget,
+}
+
+/// An obligation the proxy must fulfill when forwarding an allowed action.
+#[type_tag = "type"]
+union Obligation {
+    InjectCredential(InjectCredentialObligation),
+    Passthrough(PassthroughObligation),
+}
+
+struct InjectCredentialObligation { credential: CredentialRef }
+
+/// Forward the consumer's own credential unchanged (filter-only / hybrid mode).
+struct PassthroughObligation {}
+
+struct AllowVerdict { obligations: Vec<Obligation> }
+
+struct DenyVerdict { reason: DenyReason }
+
+/// The engine's decision for one action.
+#[type_tag = "type"]
+union Verdict {
+    Allow(AllowVerdict),
+    Deny(DenyVerdict),
+}

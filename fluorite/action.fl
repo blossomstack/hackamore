@@ -1,0 +1,50 @@
+/// The normalized, protocol-agnostic representation of one operation an agent attempts.
+/// The policy engine decides solely on an `Action`; each proxy adapter translates its
+/// native request (an HTTP call today, an Envoy ext_authz check tomorrow) into one.
+/// This is the portability boundary that lets the engine outlive any single proxy.
+package action;
+
+/// The CRUD operation kinds RESTful services map onto from the HTTP method.
+enum CrudKind {
+    Read,
+    Create,
+    Update,
+    Delete,
+}
+
+/// A coarse CRUD verb — the RESTful method mapping.
+struct CrudVerb { kind: CrudKind }
+
+/// A service-defined action id, e.g. "ec2:TerminateInstances" (RPC-style services whose
+/// operation does not fit CRUD). This is the one open vocabulary, scoped to this field.
+struct NamedVerb { id: String }
+
+/// The operation, abstracted over a protocol's concrete verbs. A closed tagged union: the
+/// `Crud` arm is the closed RESTful set; the `Action` arm carries the open, service-defined
+/// vocabulary. The engine matches by equality over both arms (exhaustive, fail-closed).
+#[type_tag = "type"]
+union Verb {
+    Crud(CrudVerb),
+    Action(NamedVerb),
+}
+
+/// The resource an action addresses, parsed from the request by an adapter.
+struct Resource {
+    /// Canonical, slash-joined path with concrete identifiers, e.g.
+    /// "repos/octocat/hello-world/pulls". Rule globs match against this.
+    path: String,
+    /// Coarse resource class, e.g. "repo", "pull_request", "issue", "contents".
+    kind: String,
+}
+
+/// One normalized operation, the sole input to the policy engine.
+struct Action {
+    /// The configured service instance this targets (e.g. "github", "eks-prod") — the
+    /// routing key halter matched, and what policy rules scope to.
+    target: String,
+    verb: Verb,
+    resource: Resource,
+    /// Selected request attributes (merged query + JSON body) for conditional rules,
+    /// as a JSON object, e.g. {"base":"main","draft":true}. Empty object if none.
+    fields: Any,
+}

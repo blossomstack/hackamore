@@ -1,0 +1,32 @@
+/// The control-plane wire API the orchestrator calls to mint a short-lived capability
+/// token bound to a submitted policy.
+package control;
+
+use policy.Policy;
+
+/// Mint a launch token bound to a submitted policy. There is no agent identity: any valid
+/// policy yields a token (multi-tenant caller-authorization, when added, gates this
+/// separately, before minting).
+struct MintRequest {
+    policy: Policy,
+    ttl_seconds: u64,
+}
+
+/// A minted token. Honored only by the halter proxy and useless against the real
+/// upstream. The consumer presents it; the proxy enforces the bound policy.
+struct MintResponse {
+    token: String,
+    expires_at_ms: u64,
+}
+
+/// Revoke a token immediately, before its TTL expires. The presenter holds the token, so
+/// presenting it is sufficient authorization to invalidate it.
+struct RevokeRequest {
+    token: String,
+}
+
+/// The result of a revoke: whether a live token was actually removed (`false` if it was
+/// already unknown, expired, or revoked).
+struct RevokeResponse {
+    revoked: bool,
+}

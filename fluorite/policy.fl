@@ -1,0 +1,56 @@
+/// An agent's standing authorization policy (Option 3: policy is attached to the agent
+/// identity, not chosen per task). Authored as a file and held in the control plane;
+/// evaluated top-to-bottom by the `policy` engine with first-match-wins, default-deny.
+package policy;
+
+use action.Verb;
+
+/// Whether a matching rule grants or denies the action.
+enum Effect {
+    Allow,
+    Deny,
+}
+
+/// Field equals the given JSON value.
+struct EqualsCondition { field: String, value: Any }
+
+/// Field is one of the given JSON values.
+struct OneOfCondition { field: String, values: Vec<Any> }
+
+/// Field is present and non-null.
+struct ExistsCondition { field: String }
+
+/// A predicate over one entry in `Action.fields`. `field` is a dotted path into the
+/// fields JSON object (e.g. "base", "head.ref").
+#[type_tag = "type"]
+union Condition {
+    Equals(EqualsCondition),
+    OneOf(OneOfCondition),
+    Exists(ExistsCondition),
+}
+
+/// What an action must look like for a rule to apply. Each empty list means "any".
+struct Match {
+    /// Service names this rule applies to (e.g. "github"); empty = any service.
+    targets: Vec<String>,
+    /// Verbs this rule applies to; empty = any verb.
+    verbs: Vec<Verb>,
+    /// Resource-path globs (segment-wise `*`, trailing `**` matches any remainder),
+    /// e.g. "repos/octocat/*/pulls". Empty = any resource.
+    resources: Vec<String>,
+    /// All conditions must hold (AND). Empty = no field constraints.
+    conditions: Vec<Condition>,
+}
+
+/// A single policy rule. Rules are evaluated in order; the first whose `matches` matches
+/// the action determines the outcome. Credentials are NOT named here — the matched service
+/// instance owns its credential, so policy authors reference targets, not secrets.
+struct Rule {
+    effect: Effect,
+    matches: Match,
+}
+
+/// The full ordered rule set for one agent. If no rule matches, the action is denied.
+struct Policy {
+    rules: Vec<Rule>,
+}

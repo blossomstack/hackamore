@@ -1,0 +1,19 @@
+[package]
+name = "models"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false # internal application crate, never published to crates.io
+
+[dependencies]
+fluorite   = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+schemars   = { workspace = true }
+derive-new = { workspace = true }
+
+[build-dependencies]
+fluorite_codegen = { workspace = true }
+
+[lints]
+workspace = true

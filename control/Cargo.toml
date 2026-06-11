@@ -1,0 +1,27 @@
+[package]
+name = "control"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+models      = { workspace = true }
+parking_lot = { workspace = true }
+uuid        = { workspace = true }
+tracing     = { workspace = true }
+# Credential providers (minting/rotation): ring for RS256 (GitHub-App JWT) + SigV4 presign
+# (EKS get-token), base64 for token encoding, reqwest for the GitHub installation-token
+# exchange, serde for parsing it, tokio for the background refresher.
+ring        = { workspace = true }
+base64      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+reqwest     = { workspace = true }
+tokio       = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

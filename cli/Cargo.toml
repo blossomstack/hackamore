@@ -1,0 +1,34 @@
+[package]
+name = "cli"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+name = "cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "halter"
+path = "src/main.rs"
+
+[[bin]]
+name = "halter-agent"
+path = "src/bin/halter-agent.rs"
+
+[dependencies]
+models     = { workspace = true }
+policy     = { workspace = true }
+control    = { workspace = true }
+gateway    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+clap       = { workspace = true }
+tokio      = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest    = { workspace = true }
+
+[lints]
+workspace = true

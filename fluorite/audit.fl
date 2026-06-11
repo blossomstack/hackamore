@@ -1,0 +1,20 @@
+/// Audit records: every decision halter makes is journaled, allow or deny.
+package audit;
+
+use action.Action;
+
+/// The recorded outcome for an action.
+enum Decision {
+    Allow,
+    Deny,
+}
+
+/// One immutable audit record: what was attempted, and what halter decided.
+struct AuditEvent {
+    /// Unix epoch milliseconds when the decision was made.
+    at_ms: u64,
+    action: Action,
+    decision: Decision,
+    /// Human-readable detail: the deny reason, or the credential injected on allow.
+    detail: String,
+}

@@ -1,0 +1,13 @@
+[package]
+name = "policy"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]
+models     = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
