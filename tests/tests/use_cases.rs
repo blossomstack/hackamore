@@ -28,7 +28,9 @@ async fn provision_agent(
     home: &std::path::Path,
 ) -> (String, models::provision::ProvisionDoc) {
     let token = halter.mint_token(pol, 3600).await;
-    let doc = cli::agent::fetch_provision(&halter.admin_url, &token)
+    // Provision the way a sandboxed consumer does: via the proxy listener's reserved
+    // `/.halter/provision` path (the admin API is unreachable from a sandbox).
+    let doc = cli::agent::fetch_provision(&halter.proxy_url, &token)
         .await
         .expect("provision");
     cli::agent::write_configs(home, &doc).expect("write configs");

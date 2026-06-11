@@ -257,36 +257,62 @@ async fn tenant_mint_is_scoped_to_owned_targets() {
     assert_eq!(mint(Some("ghost"), "github").await.unwrap().status(), 403);
 }
 
-/// User story: a consumer fetches its setup bundle from `/provision` with its token.
+/// User story: a sandboxed consumer whose only egress is the proxy listener fetches its
+/// setup bundle from the reserved `/.halter/provision` path. A missing or unknown token
+/// is rejected, provisioning never touches the upstream, and the endpoint exists *only*
+/// on the proxy — the admin listener does not serve it.
 #[tokio::test]
-async fn provision_returns_setup_bundle() {
+async fn provision_is_served_from_the_proxy_listener() {
     let upstream = start_mock_upstream().await;
     let halter = start_halter(&upstream.base_url).await;
     halter.add_credential("github-app", "real-secret-token");
     let token = halter.mint_token(&policy_from(READ_ONLY), 3600).await;
+    let client = reqwest::Client::new();
 
-    let resp = reqwest::Client::new()
+    // Token-holder via the PROXY listener → 200 with the setup bundle.
+    let via_proxy = client
+        .get(format!("{}/.halter/provision", halter.proxy_url))
+        .header("X-Halter-Token", &token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(via_proxy.status(), 200);
+    let proxy_doc: serde_json::Value = via_proxy.json().await.unwrap();
+    assert_eq!(proxy_doc["halterToken"], token);
+    // The github service (allow-all-targets policy) is surfaced, and no real secret
+    // leaks into the doc.
+    let services = proxy_doc["services"].as_array().unwrap();
+    assert!(services.iter().any(|s| s["target"] == "github"));
+    assert!(!resp_text_contains(&proxy_doc, "real-secret-token"));
+
+    // The admin listener does NOT serve provisioning — the back-compat route is gone.
+    let via_admin = client
         .get(format!("{}/provision", halter.admin_url))
         .header("X-Halter-Token", &token)
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let doc: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(doc["halterToken"], token);
-    // The github service (allow-all-targets policy) is surfaced, in inject mode, and no
-    // real secret leaks into the doc.
-    let services = doc["services"].as_array().unwrap();
-    assert!(services.iter().any(|s| s["target"] == "github"));
-    assert!(!resp_text_contains(&doc, "real-secret-token"));
+    assert_eq!(via_admin.status(), 404);
 
-    // No token → 401.
-    let unauth = reqwest::Client::new()
-        .get(format!("{}/provision", halter.admin_url))
+    // Missing token → 401.
+    let no_token = client
+        .get(format!("{}/.halter/provision", halter.proxy_url))
         .send()
         .await
         .unwrap();
-    assert_eq!(unauth.status(), 401);
+    assert_eq!(no_token.status(), 401);
+
+    // Unknown/expired token → 401.
+    let bad_token = client
+        .get(format!("{}/.halter/provision", halter.proxy_url))
+        .header("X-Halter-Token", "never-existed")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_token.status(), 401);
+
+    // The reserved prefix is halter surface: nothing reached the upstream.
+    assert!(!upstream.was_called());
 }
 
 fn resp_text_contains(doc: &serde_json::Value, needle: &str) -> bool {

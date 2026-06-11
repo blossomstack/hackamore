@@ -1,8 +1,9 @@
 //! `halter-agent` — the consumer-side setup CLI (thin wrapper over [`cli::agent`]).
 //!
 //! A sandboxed consumer runs one command to configure its stock tools (`gh`/`kubectl`/
-//! `aws`/SDKs) to reach upstreams through halter. It fetches a provision doc from
-//! `/provision` and renders native config from it.
+//! `aws`/SDKs) to reach upstreams through halter. It fetches a provision doc from the
+//! reserved `/.halter/provision` path on the proxy listener (`--halter-url`) — the only
+//! address a sandbox can reach — and renders native config from it.
 
 use clap::{Parser, Subcommand};
 
@@ -29,9 +30,10 @@ enum Command {
 
 #[derive(clap::Args)]
 struct Common {
-    /// Base URL of the halter admin API, e.g. http://127.0.0.1:9091
+    /// Base URL of the halter proxy listener, e.g. http://127.0.0.1:9090 (provision is
+    /// fetched from the reserved /.halter/provision path).
     #[arg(long)]
-    admin_url: String,
+    halter_url: String,
     /// The halter token to provision for.
     #[arg(long)]
     token: String,
@@ -66,20 +68,20 @@ fn resolve_home(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::Show(c) => {
-            let doc = cli::agent::fetch_provision(&c.admin_url, &c.token).await?;
+            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
             println!("{}", serde_json::to_string_pretty(&doc)?);
         }
         Command::Env(c) => {
-            let doc = cli::agent::fetch_provision(&c.admin_url, &c.token).await?;
+            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
             print!("{}", cli::agent::render_env(&doc));
         }
         Command::Status(c) => {
-            let doc = cli::agent::fetch_provision(&c.admin_url, &c.token).await?;
+            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
             print!("{}", cli::agent::render_status(&doc));
         }
         Command::Setup(args) => {
             let doc =
-                cli::agent::fetch_provision(&args.common.admin_url, &args.common.token).await?;
+                cli::agent::fetch_provision(&args.common.halter_url, &args.common.token).await?;
             let home = resolve_home(args.home)?;
             let written = cli::agent::write_configs(&home, &doc)?;
             for p in &written {

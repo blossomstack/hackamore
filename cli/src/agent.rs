@@ -1,5 +1,7 @@
-//! Consumer-side provisioning: fetch the [`ProvisionDoc`] from halter's `/provision` and
-//! render it into native tool config. [`write_configs`] writes everything **under a
+//! Consumer-side provisioning: fetch the [`ProvisionDoc`] from the reserved
+//! `/.halter/provision` path on halter's proxy listener — the only address a sandboxed
+//! consumer can reach — and render it into native tool config. [`write_configs`]
+//! writes everything **under a
 //! caller-supplied home directory** — nothing outside it is touched, so a sandbox (or a
 //! test) can configure stock tools without polluting the host's real `~/.kube`, `~/.aws`,
 //! or git config.
@@ -20,9 +22,12 @@ const MANIFEST: &str = ".halter/manifest";
 /// Relative path (under the home) of the CA bundle, when halter terminates TLS.
 const CA_BUNDLE: &str = ".halter/halter-ca.pem";
 
-/// Fetch the provision doc, presenting the token via `X-Halter-Token`.
-pub async fn fetch_provision(admin_url: &str, token: &str) -> Result<ProvisionDoc, String> {
-    let url = format!("{}/provision", admin_url.trim_end_matches('/'));
+/// Fetch the provision doc from the reserved `/.halter/provision` path on the proxy
+/// listener at `proxy_url`, presenting the token via `X-Halter-Token`. The proxy
+/// listener is the only address a sandboxed consumer can reach; the admin listener
+/// (which also serves the unauthenticated `/mint`) stays operator-only.
+pub async fn fetch_provision(proxy_url: &str, token: &str) -> Result<ProvisionDoc, String> {
+    let url = format!("{}/.halter/provision", proxy_url.trim_end_matches('/'));
     let resp = reqwest::Client::new()
         .get(&url)
         .header("X-Halter-Token", token)

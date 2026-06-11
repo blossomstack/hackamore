@@ -97,9 +97,10 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
     assert_eq!(resp.status(), 200);
     assert!(halter.proxy_url.starts_with("https://"));
 
-    // The provision doc surfaces the CA the consumer must trust.
-    let doc: serde_json::Value = reqwest::Client::new()
-        .get(format!("{}/provision", halter.admin_url))
+    // The provision doc surfaces the CA the consumer must trust. It is served from the
+    // reserved path on the (HTTPS) proxy listener, so reuse the CA-trusting client.
+    let doc: serde_json::Value = client
+        .get(format!("{}/.halter/provision", halter.proxy_url))
         .header("X-Halter-Token", &token)
         .send()
         .await
