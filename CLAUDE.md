@@ -21,7 +21,7 @@ can be reused by any proxy (hudsucker, Envoy `ext_authz`, …) in future:
   an `Action`, calls `hackamore_policy::decide`, enforces the `Verdict` (deny → 403; allow →
   inject credential + forward), and emits an audit event. Confinement (forcing the
   agent's egress through the gateway) is the sandbox's job — see horsie's nono caps.
-- **`hackamore-cli`** — the `hackamore` binary: serve the gateway + admin API, mint tokens.
+- **`hackamore`** — the `hackamore` binary: serve the gateway + admin API, mint tokens.
 - **`hackamore-models`** — fluorite-generated protocol/contract types.
 - **`hackamore-tests`** — full-stack e2e tests.
 
@@ -63,7 +63,7 @@ Use [fluorite](https://github.com/blossomstack/fluorite) to generate all protoco
 types — any data transported between modules or between server and clients (the
 `Action`/`Verdict` contract, audit events, the control-plane mint API).
 
-- Define schemas as `.fl` files under `fluorite/` at the workspace root.
+- Define schemas as `.fl` files under `models/fluorite/` (inside the models crate, so published packages are self-contained).
 - The `hackamore-models` crate runs `fluorite_codegen` in `build.rs` and exposes generated types
   via `models::<package>::*`.
 - Generated types automatically derive `Debug`, `Clone`, `PartialEq`, `Serialize`,

@@ -1,9 +1,10 @@
 [package]
-name = "hackamore-cli"
+name = "hackamore"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false
+repository.workspace = true
+description = "JIT, policy-scoped credential proxy for untrusted AI agents"
 
 [lib]
 name = "hackamore_cli"

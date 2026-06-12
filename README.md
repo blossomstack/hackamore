@@ -52,7 +52,7 @@ can be reused by any proxy (an Envoy `ext_authz` adapter, a hudsucker MITM, …)
 | `hackamore-policy` | the **reusable engine** — pure `decide(&Action, &Policy) -> Verdict`, no I/O |
 | `hackamore-control` | control plane: agent→policy registry, token minting, credential vault, audit sink |
 | `hackamore-gateway` | data plane: Host router + service allowlist, request→`Action` normalizer (generic + flavors), decision/enforcement core, streaming reverse proxy |
-| `hackamore-cli` | the `hackamore` binary: `serve` + `mint` |
+| `hackamore` | the `hackamore` binary: `serve` + `mint` |
 | `hackamore-tests` | full-stack e2e tests (mock GitHub upstream + live server) |
 
 The `Action`/`Verdict` contract is the portability boundary: the engine never sees HTTP,

@@ -3,7 +3,8 @@ name = "hackamore-gateway"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false
+repository.workspace = true
+description = "Data plane for hackamore: Host-routed, policy-enforcing streaming reverse proxy"
 
 [dependencies]
 hackamore-models = { workspace = true }

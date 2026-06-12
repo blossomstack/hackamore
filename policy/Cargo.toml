@@ -3,7 +3,8 @@ name = "hackamore-policy"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false
+repository.workspace = true
+description = "Pure policy engine for hackamore: decide(Action, Policy) -> Verdict, no I/O"
 
 [dependencies]
 hackamore-models = { workspace = true }

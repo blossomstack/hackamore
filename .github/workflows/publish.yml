@@ -1,0 +1,46 @@
+name: Publish
+
+# Publishes every workspace crate to crates.io, in dependency order, via
+# Trusted Publishing (OIDC) — no long-lived token.
+#
+# One-time setup on crates.io (after each crate exists): crate Settings ->
+# Trusted Publishing -> GitHub, with repository blossomstack/hackamore and
+# workflow publish.yml (each crate needs its own config).
+#
+# Bootstrap caveat: trusted publishing can only be configured for crates that
+# already exist on crates.io, so the very first publish falls back to the
+# CARGO_REGISTRY_TOKEN repo secret. Delete the secret once OIDC is configured.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # mint the OIDC token exchanged for a temp crates.io token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Authenticate with crates.io (OIDC)
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+        # First-ever publish has no trusted-publishing config yet; fall through
+        # to the token secret below instead of failing the run.
+        continue-on-error: true
+
+      # `--workspace` resolves the inter-crate publish order automatically and
+      # skips publish = false members (tests). `--locked` guards against the
+      # lockfile drifting from what CI tested.
+      - name: cargo publish
+        run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}

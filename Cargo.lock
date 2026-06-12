@@ -589,18 +589,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "hackamore-agent"
-version = "0.1.0"
-dependencies = [
- "clap",
- "hackamore-models",
- "reqwest",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "hackamore-cli"
+name = "hackamore"
 version = "0.1.0"
 dependencies = [
  "clap",
@@ -614,6 +603,17 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "hackamore-agent"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hackamore-models",
+ "reqwest",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

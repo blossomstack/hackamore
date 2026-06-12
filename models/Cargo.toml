@@ -3,7 +3,8 @@ name = "hackamore-models"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false # internal application crate, never published to crates.io
+repository.workspace = true
+description = "Protocol and contract types for hackamore: Action, Verdict, Policy, audit and mint wire types"
 
 [dependencies]
 fluorite   = { workspace = true }

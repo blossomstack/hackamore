@@ -3,7 +3,8 @@ name = "hackamore-agent"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
-publish = false
+repository.workspace = true
+description = "Consumer-side provisioning for hackamore: fetch the provision doc and configure stock tools"
 
 [lib]
 name = "hackamore_agent"
