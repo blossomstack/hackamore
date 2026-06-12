@@ -37,22 +37,11 @@ jobs:
         # to the token secret below instead of failing the run.
         continue-on-error: true
 
-      # Publish per crate, in dependency order, skipping versions that are
-      # already on the registry. `cargo publish --workspace` hard-errors on
-      # already-published members, which would wedge reruns after a partial
-      # publish (e.g. a crates.io new-crate rate limit). `--locked` guards
-      # against the lockfile drifting from what CI tested.
+      # `--workspace` resolves the inter-crate publish order automatically and
+      # skips publish = false members (tests). `--locked` guards against the
+      # lockfile drifting from what CI tested.
       - name: cargo publish
-        run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          for crate in hackamore-models hackamore-policy hackamore-control hackamore-gateway hackamore-agent hackamore; do
-            if curl -fsS -A "publish-workflow (github.com/blossomstack/hackamore)" \
-                "https://crates.io/api/v1/crates/$crate/$VERSION" >/dev/null 2>&1; then
-              echo "$crate@$VERSION already published, skipping"
-              continue
-            fi
-            cargo publish -p "$crate" --locked
-          done
+        run: cargo publish --workspace --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token || secrets.CARGO_REGISTRY_TOKEN }}
 
