@@ -1,0 +1,24 @@
+[package]
+name = "halter-agent"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+name = "halter_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "halter-agent"
+path = "src/main.rs"
+
+[dependencies]
+models     = { workspace = true }
+reqwest    = { workspace = true }
+clap       = { workspace = true }
+tokio      = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

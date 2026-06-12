@@ -645,6 +645,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "halter-agent"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "models",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1762,9 +1773,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
- "cli",
  "control",
  "gateway",
+ "halter-agent",
  "http",
  "hyper",
  "hyper-util",

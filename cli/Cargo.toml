@@ -13,10 +13,6 @@ path = "src/lib.rs"
 name = "halter"
 path = "src/main.rs"
 
-[[bin]]
-name = "halter-agent"
-path = "src/bin/halter-agent.rs"
-
 [dependencies]
 models     = { workspace = true }
 policy     = { workspace = true }

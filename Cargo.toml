@@ -5,6 +5,7 @@ members = [
     "control",
     "gateway",
     "cli",
+    "halter-agent",
     "tests",
 ]
 resolver = "2"
@@ -16,10 +17,11 @@ version = "0.1.0"
 
 [workspace.dependencies]
 # Internal crates
-models  = { path = "models" }
-policy  = { path = "policy" }
-control = { path = "control" }
-gateway = { path = "gateway" }
+models       = { path = "models" }
+policy       = { path = "policy" }
+control      = { path = "control" }
+gateway      = { path = "gateway" }
+halter-agent = { path = "halter-agent" }
 
 # Protocol codegen
 fluorite         = "0.6.0"

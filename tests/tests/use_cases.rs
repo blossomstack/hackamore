@@ -30,10 +30,10 @@ async fn provision_agent(
     let token = halter.mint_token(pol, 3600).await;
     // Provision the way a sandboxed consumer does: via the proxy listener's reserved
     // `/.halter/provision` path (the admin API is unreachable from a sandbox).
-    let doc = cli::agent::fetch_provision(&halter.proxy_url, &token)
+    let doc = halter_agent::fetch_provision(&halter.proxy_url, &token)
         .await
         .expect("provision");
-    cli::agent::write_configs(home, &doc).expect("write configs");
+    halter_agent::write_configs(home, &doc).expect("write configs");
     (token, doc)
 }
 

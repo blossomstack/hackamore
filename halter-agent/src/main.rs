@@ -1,4 +1,5 @@
-//! `halter-agent` — the consumer-side setup CLI (thin wrapper over [`cli::agent`]).
+//! `halter-agent` — the consumer-side setup CLI (thin wrapper over the `halter_agent`
+//! library crate).
 //!
 //! A sandboxed consumer runs one command to configure its stock tools (`gh`/`kubectl`/
 //! `aws`/SDKs) to reach upstreams through halter. It fetches a provision doc from the
@@ -68,29 +69,29 @@ fn resolve_home(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::Show(c) => {
-            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
+            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
             println!("{}", serde_json::to_string_pretty(&doc)?);
         }
         Command::Env(c) => {
-            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
-            print!("{}", cli::agent::render_env(&doc));
+            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
+            print!("{}", halter_agent::render_env(&doc));
         }
         Command::Status(c) => {
-            let doc = cli::agent::fetch_provision(&c.halter_url, &c.token).await?;
-            print!("{}", cli::agent::render_status(&doc));
+            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
+            print!("{}", halter_agent::render_status(&doc));
         }
         Command::Setup(args) => {
             let doc =
-                cli::agent::fetch_provision(&args.common.halter_url, &args.common.token).await?;
+                halter_agent::fetch_provision(&args.common.halter_url, &args.common.token).await?;
             let home = resolve_home(args.home)?;
-            let written = cli::agent::write_configs(&home, &doc)?;
+            let written = halter_agent::write_configs(&home, &doc)?;
             for p in &written {
                 println!("wrote {}", p.display());
             }
         }
         Command::Teardown(args) => {
             let home = resolve_home(args.home)?;
-            let removed = cli::agent::teardown(&home)?;
+            let removed = halter_agent::teardown(&home)?;
             for p in &removed {
                 println!("removed {}", p.display());
             }

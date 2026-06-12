@@ -8,17 +8,17 @@ publish = false
 # Test-support crate: no workspace restriction lints so helpers can use unwrap freely.
 
 [dependencies]
-models     = { workspace = true }
-policy     = { workspace = true }
-control    = { workspace = true }
-gateway    = { workspace = true }
-cli        = { path = "../cli" }
-serde_json = { workspace = true }
-http       = { workspace = true }
-bytes      = { workspace = true }
-axum       = { workspace = true }
-reqwest    = { workspace = true }
-tokio      = { workspace = true }
-tempfile   = { workspace = true }
-hyper      = { workspace = true }
-hyper-util = { workspace = true }
+models       = { workspace = true }
+policy       = { workspace = true }
+control      = { workspace = true }
+gateway      = { workspace = true }
+halter-agent = { workspace = true }
+serde_json   = { workspace = true }
+http         = { workspace = true }
+bytes        = { workspace = true }
+axum         = { workspace = true }
+reqwest      = { workspace = true }
+tokio        = { workspace = true }
+tempfile     = { workspace = true }
+hyper        = { workspace = true }
+hyper-util   = { workspace = true }
