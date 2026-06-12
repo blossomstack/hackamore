@@ -2,7 +2,7 @@
 
 ## `config.json`
 
-A worked halter server config:
+A worked hackamore server config:
 
 - **proxy_addr / admin_addr** — the agent-facing reverse proxy and the
   operator/orchestrator admin API. Bind the admin API to localhost only.
@@ -12,7 +12,7 @@ A worked halter server config:
   target's real credential. An unmatched host is denied (fail closed).
 - **credentials** — logical id → real secret, referenced by a service's `inject`.
   Provision a real **GitHub App installation token** (short-lived, repo-scoped,
-  revocable); it never leaves halter. The placeholder must be replaced before the proxy
+  revocable); it never leaves hackamore. The placeholder must be replaced before the proxy
   can inject it.
 
 There are no agents: a token is minted from a **policy document**. The example policy in
@@ -27,13 +27,13 @@ Everything else is denied (default-deny).
 Run it:
 
 ```bash
-cargo run -p cli --bin halter -- serve --config examples/config.json
+cargo run -p cli --bin hackamore -- serve --config examples/config.json
 ```
 
 Then mint a token from the policy and drive it as a sandboxed consumer would:
 
 ```bash
-TOKEN=$(cargo run -q -p cli --bin halter -- \
+TOKEN=$(cargo run -q -p cli --bin hackamore -- \
   mint --admin-url http://127.0.0.1:9091 --policy examples/policy.reviewer-bot.json --ttl 3600 \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
 

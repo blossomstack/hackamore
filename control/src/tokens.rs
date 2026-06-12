@@ -1,14 +1,14 @@
 //! Short-lived launch tokens. The orchestrator mints a token bound to a submitted
 //! [`Policy`] with a TTL; the consumer presents it to the proxy, which resolves it back
-//! to that policy. The token is an opaque capability honored only by halter — it is
+//! to that policy. The token is an opaque capability honored only by hackamore — it is
 //! useless against the real upstream — and is revocable at any time. There is no agent
 //! identity: the token *is* the policy binding.
 //!
 //! Time is passed in explicitly (`now_ms`) so minting, expiry, and resolution are all
 //! deterministically testable; the binary supplies the wall clock via [`crate::now_ms`].
 
-use models::control::MintResponse;
-use models::policy::Policy;
+use hackamore_models::control::MintResponse;
+use hackamore_models::policy::Policy;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ struct Entry {
 }
 
 /// A minted dummy AWS SigV4 credential, bound to a policy. The consumer's tooling signs
-/// with it; halter verifies that signature (with [`Tokens::resolve_sigv4`]) and re-signs
+/// with it; hackamore verifies that signature (with [`Tokens::resolve_sigv4`]) and re-signs
 /// the outbound request with the real account credential. Useless against real AWS.
 pub struct SigV4Mint {
     pub access_key_id: String,
@@ -64,8 +64,11 @@ impl Tokens {
     /// Mint a dummy AWS SigV4 credential bound to `policy`. The access key id is the
     /// lookup key; the secret is stored to verify inbound signatures.
     pub fn mint_sigv4(&self, policy: Policy, ttl_seconds: u64, now_ms: u64) -> SigV4Mint {
-        let access_key_id = format!("AKIAHALTER{}", &Uuid::new_v4().simple().to_string()[..10])
-            .to_ascii_uppercase();
+        let access_key_id = format!(
+            "AKIAHACKAMORE{}",
+            &Uuid::new_v4().simple().to_string()[..10]
+        )
+        .to_ascii_uppercase();
         let secret_access_key = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let expires_at_ms = now_ms.saturating_add(ttl_seconds.saturating_mul(1000));
         self.entries.write().insert(
@@ -174,7 +177,7 @@ mod tests {
     fn sigv4_mint_resolves_by_access_key_id() {
         let tokens = Tokens::new();
         let m = tokens.mint_sigv4(empty_policy(), 60, 1_000);
-        assert!(m.access_key_id.starts_with("AKIAHALTER"));
+        assert!(m.access_key_id.starts_with("AKIAHACKAMORE"));
         let (_policy, secret) = tokens.resolve_sigv4(&m.access_key_id, 1_000).unwrap();
         assert_eq!(secret, m.secret_access_key);
         // Expired and unknown both miss.

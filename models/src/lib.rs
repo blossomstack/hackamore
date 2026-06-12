@@ -1,4 +1,4 @@
-//! Generated protocol/contract types for halter (see `fluorite/*.fl`).
+//! Generated protocol/contract types for hackamore (see `fluorite/*.fl`).
 //!
 //! Each module is generated from the like-named schema package. Hand-written
 //! convenience constructors live here, never in the schemas.

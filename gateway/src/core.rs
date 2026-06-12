@@ -1,8 +1,8 @@
 //! The gateway core: the transport-agnostic decision + enforcement path.
 //!
-//! [`Gateway::handle`] takes a normalized [`ProxyRequest`], authenticates the halter
+//! [`Gateway::handle`] takes a normalized [`ProxyRequest`], authenticates the hackamore
 //! token and resolves its bound policy, normalizes the request into an `Action`, calls
-//! the pure [`policy::decide`], records an audit event, and returns an [`Outcome`] —
+//! the pure [`hackamore_policy::decide`], records an audit event, and returns an [`Outcome`] —
 //! either a [`ForwardPlan`] (with the matched service's outbound stance applied) or a
 //! [`Rejection`]. It performs no network I/O itself; the server module executes the
 //! forward. Keeping this layer free of HTTP plumbing makes the whole decision path
@@ -10,10 +10,10 @@
 
 use crate::service::{Catalog, Outbound, Service, ServiceRouter};
 use crate::{canonicalize, normalize};
-use control::{ControlPlane, now_ms};
-use models::action::Action;
-use models::audit::{AuditEvent, Decision};
-use models::verdict::{DenyReason, Verdict};
+use hackamore_control::{ControlPlane, now_ms};
+use hackamore_models::action::Action;
+use hackamore_models::audit::{AuditEvent, Decision};
+use hackamore_models::verdict::{DenyReason, Verdict};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -63,9 +63,9 @@ pub struct Gateway {
     /// Per-target action catalogs used to validate policies at mint time. A target with
     /// no entry (or an empty catalog) is unvalidated (raw).
     catalogs: HashMap<String, Catalog>,
-    /// The CA bundle a consumer must trust to validate halter's TLS, surfaced in the
-    /// provision doc. Empty when halter terminates plaintext (the sandbox-confined model).
-    halter_ca: String,
+    /// The CA bundle a consumer must trust to validate hackamore's TLS, surfaced in the
+    /// provision doc. Empty when hackamore terminates plaintext (the sandbox-confined model).
+    hackamore_ca: String,
 }
 
 impl Gateway {
@@ -77,7 +77,7 @@ impl Gateway {
             router,
             clock: Arc::new(now_ms),
             catalogs: HashMap::new(),
-            halter_ca: String::new(),
+            hackamore_ca: String::new(),
         }
     }
 
@@ -88,7 +88,7 @@ impl Gateway {
             router,
             clock,
             catalogs: HashMap::new(),
-            halter_ca: String::new(),
+            hackamore_ca: String::new(),
         }
     }
 
@@ -99,11 +99,11 @@ impl Gateway {
         self
     }
 
-    /// Set the CA bundle consumers must trust to validate halter's TLS (surfaced as
-    /// `halter_ca` in the provision doc). Builder; empty means plaintext.
+    /// Set the CA bundle consumers must trust to validate hackamore's TLS (surfaced as
+    /// `hackamore_ca` in the provision doc). Builder; empty means plaintext.
     #[must_use]
     pub fn with_ca(mut self, ca_pem: impl Into<String>) -> Self {
-        self.halter_ca = ca_pem.into();
+        self.hackamore_ca = ca_pem.into();
         self
     }
 
@@ -112,9 +112,9 @@ impl Gateway {
     /// identity (multi-tenant caller-authorization, when added, gates this earlier).
     pub fn mint(
         &self,
-        policy: models::policy::Policy,
+        policy: hackamore_models::policy::Policy,
         ttl_seconds: u64,
-    ) -> models::control::MintResponse {
+    ) -> hackamore_models::control::MintResponse {
         self.control
             .tokens
             .mint(policy, ttl_seconds, (self.clock)())
@@ -126,10 +126,10 @@ impl Gateway {
     /// fail closed, closing the credential-laundering hole.
     pub fn mint_checked(
         &self,
-        policy: models::policy::Policy,
+        policy: hackamore_models::policy::Policy,
         ttl_seconds: u64,
         tenant: Option<&str>,
-    ) -> Result<models::control::MintResponse, MintError> {
+    ) -> Result<hackamore_models::control::MintResponse, MintError> {
         if !self.control.tenants.is_empty() {
             let key = tenant.ok_or(MintError::MissingTenant)?;
             let owned = self
@@ -152,9 +152,9 @@ impl Gateway {
     /// each named target's catalog; an **empty-target** (any-service) allow rule — which the
     /// old check skipped entirely — must have its named action known by *at least one*
     /// configured catalog, so a typo can't slip through on the broadest rule of all.
-    fn validate_catalog(&self, policy: &models::policy::Policy) -> Result<(), MintError> {
-        use models::action::Verb;
-        use models::policy::Effect;
+    fn validate_catalog(&self, policy: &hackamore_models::policy::Policy) -> Result<(), MintError> {
+        use hackamore_models::action::Verb;
+        use hackamore_models::policy::Effect;
         let nonempty: Vec<&Catalog> = self.catalogs.values().filter(|c| !c.is_empty()).collect();
         for rule in &policy.rules {
             if rule.effect != Effect::Allow {
@@ -206,12 +206,12 @@ impl Gateway {
     /// policy ⋈ the service registry. Returns `None` for an unknown/expired token. The
     /// doc carries no real upstream secrets — only the token, endpoints, and (later) the
     /// CA.
-    pub fn provision(&self, token: &str) -> Option<models::provision::ProvisionDoc> {
+    pub fn provision(&self, token: &str) -> Option<hackamore_models::provision::ProvisionDoc> {
         let now = (self.clock)();
         let (policy, expires_at_ms) = self.control.tokens.resolve_full(token, now)?;
-        Some(models::provision::ProvisionDoc {
-            halter_token: token.to_string(),
-            halter_ca: self.halter_ca.clone(),
+        Some(hackamore_models::provision::ProvisionDoc {
+            hackamore_token: token.to_string(),
+            hackamore_ca: self.hackamore_ca.clone(),
             expires_at_ms,
             services: self.provisionable_services(token, &policy, now, expires_at_ms),
         })
@@ -220,16 +220,16 @@ impl Gateway {
     /// The services a policy grants the consumer access to: every service whose name a
     /// rule's `targets` names, or — if any allow rule has empty `targets` (= any
     /// service) — all of them. Each entry carries the credential material the consumer
-    /// presents: the halter token for bearer/passthrough services, or a freshly minted
+    /// presents: the hackamore token for bearer/passthrough services, or a freshly minted
     /// dummy SigV4 credential (bound to the same policy) for SigV4 services.
     fn provisionable_services(
         &self,
         token: &str,
-        policy: &models::policy::Policy,
+        policy: &hackamore_models::policy::Policy,
         now: u64,
         expires_at_ms: u64,
-    ) -> Vec<models::provision::ProvisionService> {
-        use models::policy::Effect;
+    ) -> Vec<hackamore_models::provision::ProvisionService> {
+        use hackamore_models::policy::Effect;
         let mut any_target = false;
         let mut named: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
         for rule in &policy.rules {
@@ -253,7 +253,7 @@ impl Gateway {
                 continue;
             }
             let (mode, auth) = self.mint_service_auth(s, token, policy, now, ttl_remaining);
-            out.push(models::provision::ProvisionService {
+            out.push(hackamore_models::provision::ProvisionService {
                 target: s.name.clone(),
                 flavor: s.flavor.name().to_string(),
                 address: s.address.clone(),
@@ -266,20 +266,20 @@ impl Gateway {
 
     /// Produce the consumer mode + auth material for one service. **This mints**: a SigV4
     /// service gets a freshly minted dummy credential bound to the same policy (hence the
-    /// `mint_` name and the explicit caller loop); everything else reuses the bearer halter
+    /// `mint_` name and the explicit caller loop); everything else reuses the bearer hackamore
     /// token and has no effect.
     fn mint_service_auth(
         &self,
         service: &Service,
         token: &str,
-        policy: &models::policy::Policy,
+        policy: &hackamore_models::policy::Policy,
         now: u64,
         ttl_remaining: u64,
     ) -> (
-        models::provision::ProvisionMode,
-        models::provision::ProvisionAuth,
+        hackamore_models::provision::ProvisionMode,
+        hackamore_models::provision::ProvisionAuth,
     ) {
-        use models::provision::{BearerAuth, ProvisionAuth, ProvisionMode, SigV4Auth};
+        use hackamore_models::provision::{BearerAuth, ProvisionAuth, ProvisionMode, SigV4Auth};
         match &service.outbound {
             Outbound::SigV4 { region, .. } => {
                 let dummy = self
@@ -310,12 +310,12 @@ impl Gateway {
 
     /// Authenticate the request to its bound policy. Two inbound schemes: AWS SigV4 (the
     /// `Authorization` header is `AWS4-HMAC-SHA256 …`, verified against a minted dummy
-    /// credential) or a halter bearer token (`X-Halter-Token` or `Authorization: Bearer`).
+    /// credential) or a hackamore bearer token (`X-Hackamore-Token` or `Authorization: Bearer`).
     fn authenticate(
         &self,
         req: &ProxyRequest,
         now: u64,
-    ) -> Result<(models::policy::Policy, AuthSource), Box<Outcome>> {
+    ) -> Result<(hackamore_models::policy::Policy, AuthSource), Box<Outcome>> {
         if let Some(auth) = req
             .headers
             .get(http::header::AUTHORIZATION)
@@ -328,7 +328,7 @@ impl Gateway {
             return Err(Box::new(reject(
                 http::StatusCode::UNAUTHORIZED,
                 DenyReason::Unauthenticated,
-                "missing halter token",
+                "missing hackamore token",
             )));
         };
         match self.control.tokens.resolve(&token, now) {
@@ -336,7 +336,7 @@ impl Gateway {
             None => Err(Box::new(reject(
                 http::StatusCode::UNAUTHORIZED,
                 DenyReason::Unauthenticated,
-                "unknown or expired halter token",
+                "unknown or expired hackamore token",
             ))),
         }
     }
@@ -349,7 +349,7 @@ impl Gateway {
         req: &ProxyRequest,
         auth: &str,
         now: u64,
-    ) -> Result<(models::policy::Policy, AuthSource), Box<Outcome>> {
+    ) -> Result<(hackamore_models::policy::Policy, AuthSource), Box<Outcome>> {
         let unauth = || {
             Box::new(reject(
                 http::StatusCode::UNAUTHORIZED,
@@ -390,7 +390,7 @@ impl Gateway {
         };
 
         // Route to a configured service by the request Host. An unmatched host is denied
-        // (fail closed) — halter only forwards to its allowlist.
+        // (fail closed) — hackamore only forwards to its allowlist.
         let host = extract_host(&req.headers).unwrap_or_default();
         let Some(service) = self.router.route(&host).cloned() else {
             self.audit_raw(&host, Decision::Deny, "no service for host", now);
@@ -419,7 +419,7 @@ impl Gateway {
         let action = normalize::normalize(&service, &req, &canonical.decoded);
         req.path = canonical.encoded;
 
-        match policy::decide(&action, &policy) {
+        match hackamore_policy::decide(&action, &policy) {
             Verdict::Deny(d) => {
                 self.audit(&action, Decision::Deny, &format!("{:?}", d.reason), now);
                 reject(http::StatusCode::FORBIDDEN, d.reason, "denied by policy")
@@ -432,7 +432,7 @@ impl Gateway {
 
     /// Build the upstream forward plan according to the matched service's outbound
     /// stance. `Passthrough` forwards the consumer's own credential (preserved by
-    /// `sanitize_headers` when the halter token arrived via `X-Halter-Token`); `Bearer`
+    /// `sanitize_headers` when the hackamore token arrived via `X-Hackamore-Token`); `Bearer`
     /// and `Header` swap in the target's real credential from the vault. A missing
     /// credential fails closed.
     fn plan_forward(
@@ -583,8 +583,8 @@ impl Gateway {
     fn audit_raw(&self, host: &str, decision: Decision, detail: &str, now: u64) {
         let action = Action::of(
             "<unrouted>",
-            models::action::Verb::crud(models::action::CrudKind::Read),
-            models::action::Resource::of(host, "host"),
+            hackamore_models::action::Verb::crud(hackamore_models::action::CrudKind::Read),
+            hackamore_models::action::Resource::of(host, "host"),
         );
         self.audit(&action, decision, detail, now);
     }
@@ -634,10 +634,10 @@ fn reject(status: http::StatusCode, reason: DenyReason, message: &str) -> Outcom
 /// owned by the tenant. An empty-targets allow rule would grant *any* service — unsafe
 /// across trust domains — so it is rejected for tenants.
 fn validate_tenant_policy(
-    policy: &models::policy::Policy,
+    policy: &hackamore_models::policy::Policy,
     owned: &std::collections::BTreeSet<String>,
 ) -> Result<(), MintError> {
-    use models::policy::Effect;
+    use hackamore_models::policy::Effect;
     for rule in &policy.rules {
         if rule.effect != Effect::Allow {
             continue;
@@ -693,44 +693,44 @@ impl std::fmt::Display for MintError {
 
 impl std::error::Error for MintError {}
 
-/// The dedicated header a consumer uses to present its halter token *without* consuming
+/// The dedicated header a consumer uses to present its hackamore token *without* consuming
 /// the `Authorization` slot — so a filter-only (passthrough) consumer can carry its own
 /// upstream credential in `Authorization` at the same time.
-const HALTER_TOKEN_HEADER: &str = "x-halter-token";
+const HACKAMORE_TOKEN_HEADER: &str = "x-hackamore-token";
 
-/// Where the halter token was found. This decides whether `Authorization` belongs to
-/// halter (and must be stripped) or to the consumer (and must be preserved for
+/// Where the hackamore token was found. This decides whether `Authorization` belongs to
+/// hackamore (and must be stripped) or to the consumer (and must be preserved for
 /// passthrough).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum AuthSource {
-    /// The token came from the dedicated `X-Halter-Token` header; `Authorization` (if
+    /// The token came from the dedicated `X-Hackamore-Token` header; `Authorization` (if
     /// any) is the consumer's own upstream credential.
-    HalterHeader,
+    HackamoreHeader,
     /// The token came from `Authorization` itself (e.g. `gh`/`kubectl`, which have only
-    /// one auth slot); `Authorization` is the halter token and must not be forwarded.
+    /// one auth slot); `Authorization` is the hackamore token and must not be forwarded.
     Authorization,
     /// The request was authenticated by an inbound AWS SigV4 signature; the inbound
-    /// `Authorization` and `X-Amz-*` signing headers are halter's to replace on re-sign.
+    /// `Authorization` and `X-Amz-*` signing headers are hackamore's to replace on re-sign.
     SigV4,
 }
 
-/// The halter token from a request's headers, ignoring its source. Used by the
+/// The hackamore token from a request's headers, ignoring its source. Used by the
 /// `/provision` endpoint, which never forwards, so the channel does not matter.
 pub fn token_from_headers(headers: &http::HeaderMap) -> Option<String> {
     extract_auth(headers).map(|(token, _)| token)
 }
 
-/// Extract the halter token and where it came from. `X-Halter-Token` is preferred (it
+/// Extract the hackamore token and where it came from. `X-Hackamore-Token` is preferred (it
 /// frees `Authorization` for passthrough); otherwise fall back to `Authorization`,
 /// accepting both `Bearer <t>` and GitHub's `token <t>` schemes.
 fn extract_auth(headers: &http::HeaderMap) -> Option<(String, AuthSource)> {
     if let Some(v) = headers
-        .get(HALTER_TOKEN_HEADER)
+        .get(HACKAMORE_TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
     {
         let v = v.trim();
         if !v.is_empty() {
-            return Some((v.to_string(), AuthSource::HalterHeader));
+            return Some((v.to_string(), AuthSource::HackamoreHeader));
         }
     }
     let raw = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
@@ -743,10 +743,10 @@ fn extract_auth(headers: &http::HeaderMap) -> Option<(String, AuthSource)> {
     }
 }
 
-/// Copy request headers for the upstream, always dropping the `X-Halter-Token` header,
+/// Copy request headers for the upstream, always dropping the `X-Hackamore-Token` header,
 /// the inbound `Host` and `Content-Length` (recomputed by the client), and hop-by-hop
-/// headers. `Authorization` is dropped only when it carried the halter token
-/// (`source == Authorization`); under `HalterHeader` it is the consumer's own credential
+/// headers. `Authorization` is dropped only when it carried the hackamore token
+/// (`source == Authorization`); under `HackamoreHeader` it is the consumer's own credential
 /// and is preserved for passthrough.
 fn sanitize_headers(headers: &http::HeaderMap, source: AuthSource) -> http::HeaderMap {
     let mut out = http::HeaderMap::new();
@@ -771,14 +771,14 @@ fn is_dropped_header(name: &http::HeaderName, source: AuthSource) -> bool {
         "upgrade",
     ];
     let n = name.as_str().to_ascii_lowercase();
-    if n == HALTER_TOKEN_HEADER || n == "host" || n == "content-length" {
+    if n == HACKAMORE_TOKEN_HEADER || n == "host" || n == "content-length" {
         return true;
     }
     if n == "authorization" {
-        // The halter token (Authorization source) and the inbound SigV4 signature (SigV4
-        // source) are both halter's to strip/replace; a HalterHeader token leaves
+        // The hackamore token (Authorization source) and the inbound SigV4 signature (SigV4
+        // source) are both hackamore's to strip/replace; a HackamoreHeader token leaves
         // Authorization as the consumer's own credential.
-        return source != AuthSource::HalterHeader;
+        return source != AuthSource::HackamoreHeader;
     }
     // Inbound SigV4 signing headers are replaced by the outbound re-sign.
     if source == AuthSource::SigV4 && (n == "x-amz-date" || n == "x-amz-content-sha256") {
@@ -792,17 +792,17 @@ fn is_dropped_header(name: &http::HeaderName, source: AuthSource) -> bool {
 mod tests {
     use super::*;
     use crate::service::{Extract, Flavor, Service, ServiceRouter};
-    use control::{InMemoryAudit, Secret};
-    use models::policy::{Effect, Match, Policy, Rule};
+    use hackamore_control::{InMemoryAudit, Secret};
+    use hackamore_models::policy::{Effect, Match, Policy, Rule};
 
     /// A control plane wired with an in-memory audit sink we can inspect, plus a seeded
     /// credential. Returns the plane, the audit handle, and the credential handle.
     fn test_control() -> (
         Arc<ControlPlane>,
         Arc<InMemoryAudit>,
-        Arc<control::InMemoryCredentials>,
+        Arc<hackamore_control::InMemoryCredentials>,
     ) {
-        let creds = Arc::new(control::InMemoryCredentials::new());
+        let creds = Arc::new(hackamore_control::InMemoryCredentials::new());
         creds.insert("github-app", Secret::new("real-secret-token"));
         let audit = Arc::new(InMemoryAudit::new());
         let plane = ControlPlane::new(creds.clone(), audit.clone());
@@ -855,7 +855,9 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec![],
-                    verbs: vec![models::action::Verb::crud(models::action::CrudKind::Read)],
+                    verbs: vec![hackamore_models::action::Verb::crud(
+                        hackamore_models::action::CrudKind::Read,
+                    )],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -872,12 +874,12 @@ mod tests {
         h
     }
 
-    /// Headers with the halter token in `X-Halter-Token` and the consumer's own
+    /// Headers with the hackamore token in `X-Hackamore-Token` and the consumer's own
     /// credential in `Authorization` (the passthrough shape).
-    fn halter_header_with_own_cred(token: &str, own_cred: &str) -> http::HeaderMap {
+    fn hackamore_header_with_own_cred(token: &str, own_cred: &str) -> http::HeaderMap {
         let mut h = http::HeaderMap::new();
         h.insert(
-            HALTER_TOKEN_HEADER,
+            HACKAMORE_TOKEN_HEADER,
             http::HeaderValue::from_str(token).unwrap(),
         );
         h.insert(
@@ -955,7 +957,7 @@ mod tests {
         let (control, _audit, _) = test_control();
         let gw = Gateway::with_clock(control.clone(), router_passthrough(), fixed_clock(1_000));
         let minted = gw.mint(allow_all(), 60);
-        // The consumer put the halter token in Authorization and carries no separate
+        // The consumer put the hackamore token in Authorization and carries no separate
         // upstream credential → it is stripped, nothing replaces it.
         match gw.handle(get(bearer(&minted.token), "/x")) {
             Outcome::Forward(plan) => {
@@ -970,9 +972,9 @@ mod tests {
         let (control, _audit, _) = test_control();
         let gw = Gateway::with_clock(control.clone(), router_passthrough(), fixed_clock(1_000));
         let minted = gw.mint(allow_all(), 60);
-        // The halter token rides X-Halter-Token; the consumer's own credential in
+        // The hackamore token rides X-Hackamore-Token; the consumer's own credential in
         // Authorization is forwarded untouched (the real filter-only behaviour).
-        let headers = halter_header_with_own_cred(&minted.token, "Bearer consumer-own-key");
+        let headers = hackamore_header_with_own_cred(&minted.token, "Bearer consumer-own-key");
         let req = ProxyRequest {
             method: http::Method::GET,
             path: "/x".into(),
@@ -988,8 +990,8 @@ mod tests {
                         .and_then(|v| v.to_str().ok()),
                     Some("Bearer consumer-own-key")
                 );
-                // The halter token header is not forwarded.
-                assert!(plan.headers.get(HALTER_TOKEN_HEADER).is_none());
+                // The hackamore token header is not forwarded.
+                assert!(plan.headers.get(HACKAMORE_TOKEN_HEADER).is_none());
             }
             Outcome::Reject(_) => panic!("expected forward"),
         }
@@ -1002,7 +1004,7 @@ mod tests {
         let minted = gw.mint(allow_all(), 60);
         // Even if the consumer presents its own credential, inject replaces it with the
         // target's real secret.
-        let headers = halter_header_with_own_cred(&minted.token, "Bearer consumer-own-key");
+        let headers = hackamore_header_with_own_cred(&minted.token, "Bearer consumer-own-key");
         let req = ProxyRequest {
             method: http::Method::GET,
             path: "/repos/o/r".into(),
@@ -1239,7 +1241,7 @@ mod tests {
                 .with_outbound(Outbound::Bearer {
                     credential: "github-app".into(),
                 })
-                .with_address("https://gh.halter.local"),
+                .with_address("https://gh.hackamore.local"),
             Service::new("openai", "api.openai.com", "https://api.openai.com"),
         ])
     }
@@ -1264,14 +1266,14 @@ mod tests {
         let gw = Gateway::with_clock(control, two_service_router(), fixed_clock(1_000));
         let minted = gw.mint(target_policy("github"), 60);
         let doc = gw.provision(&minted.token).unwrap();
-        assert_eq!(doc.halter_token, minted.token);
+        assert_eq!(doc.hackamore_token, minted.token);
         assert_eq!(doc.services.len(), 1);
         assert_eq!(doc.services[0].target, "github");
         assert_eq!(doc.services[0].flavor, "github");
-        assert_eq!(doc.services[0].address, "https://gh.halter.local");
+        assert_eq!(doc.services[0].address, "https://gh.hackamore.local");
         assert_eq!(
             doc.services[0].mode,
-            models::provision::ProvisionMode::Inject
+            hackamore_models::provision::ProvisionMode::Inject
         );
         // An unknown token yields no doc.
         assert!(gw.provision("bogus").is_none());
@@ -1295,7 +1297,7 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec!["github".into()],
-                    verbs: vec![models::action::Verb::action("repo:read")],
+                    verbs: vec![hackamore_models::action::Verb::action("repo:read")],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -1309,7 +1311,9 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec!["github".into()],
-                    verbs: vec![models::action::Verb::action("repo:delete-universe")],
+                    verbs: vec![hackamore_models::action::Verb::action(
+                        "repo:delete-universe",
+                    )],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -1323,7 +1327,7 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec!["openai".into()],
-                    verbs: vec![models::action::Verb::action("anything:goes")],
+                    verbs: vec![hackamore_models::action::Verb::action("anything:goes")],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -1346,7 +1350,7 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec![], // any service — the old check skipped these entirely
-                    verbs: vec![models::action::Verb::action(action)],
+                    verbs: vec![hackamore_models::action::Verb::action(action)],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -1400,11 +1404,14 @@ mod tests {
         assert_eq!(doc.services.len(), 2);
         // The passthrough service is surfaced as a passthrough mode.
         let openai = doc.services.iter().find(|s| s.target == "openai").unwrap();
-        assert_eq!(openai.mode, models::provision::ProvisionMode::Passthrough);
+        assert_eq!(
+            openai.mode,
+            hackamore_models::provision::ProvisionMode::Passthrough
+        );
     }
 
     #[test]
-    fn extract_auth_prefers_halter_header_then_authorization() {
+    fn extract_auth_prefers_hackamore_header_then_authorization() {
         let mut h = http::HeaderMap::new();
         h.insert(http::header::AUTHORIZATION, "token abc".parse().unwrap());
         assert_eq!(
@@ -1416,11 +1423,11 @@ mod tests {
             extract_auth(&h),
             Some(("xyz".to_string(), AuthSource::Authorization))
         );
-        // X-Halter-Token wins over Authorization.
-        h.insert(HALTER_TOKEN_HEADER, "tok-123".parse().unwrap());
+        // X-Hackamore-Token wins over Authorization.
+        h.insert(HACKAMORE_TOKEN_HEADER, "tok-123".parse().unwrap());
         assert_eq!(
             extract_auth(&h),
-            Some(("tok-123".to_string(), AuthSource::HalterHeader))
+            Some(("tok-123".to_string(), AuthSource::HackamoreHeader))
         );
     }
 }

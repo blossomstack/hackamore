@@ -1,14 +1,14 @@
 [package]
-name = "gateway"
+name = "hackamore-gateway"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [dependencies]
-models     = { workspace = true }
-policy     = { workspace = true }
-control    = { workspace = true }
+hackamore-models = { workspace = true }
+hackamore-policy = { workspace = true }
+hackamore-control = { workspace = true }
 serde_json = { workspace = true }
 tracing    = { workspace = true }
 bytes      = { workspace = true }

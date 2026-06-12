@@ -1,5 +1,5 @@
 [package]
-name = "models"
+name = "hackamore-models"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

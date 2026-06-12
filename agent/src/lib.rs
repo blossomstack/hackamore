@@ -1,36 +1,36 @@
 //! Consumer-side provisioning: fetch the [`ProvisionDoc`] from the reserved
-//! `/.halter/provision` path on halter's proxy listener — the only address a sandboxed
+//! `/.hackamore/provision` path on hackamore's proxy listener — the only address a sandboxed
 //! consumer can reach — and render it into native tool config. [`write_configs`]
 //! writes everything **under a
 //! caller-supplied home directory** — nothing outside it is touched, so a sandbox (or a
 //! test) can configure stock tools without polluting the host's real `~/.kube`, `~/.aws`,
 //! or git config.
 //!
-//! Every write is recorded in a manifest (`<home>/.halter/manifest`) so [`teardown`] can
-//! remove exactly what halter wrote and nothing else. Line-oriented files (git
+//! Every write is recorded in a manifest (`<home>/.hackamore/manifest`) so [`teardown`] can
+//! remove exactly what hackamore wrote and nothing else. Line-oriented files (git
 //! credentials) are merged idempotently rather than clobbered, so re-provisioning a second
-//! service doesn't drop the first. When halter terminates TLS, the doc carries a CA bundle
-//! ([`ProvisionDoc::halter_ca`]); it is written once and referenced by path from every
+//! service doesn't drop the first. When hackamore terminates TLS, the doc carries a CA bundle
+//! ([`ProvisionDoc::hackamore_ca`]); it is written once and referenced by path from every
 //! tool's config (kubeconfig, `~/.aws/config`, `.gitconfig`).
 
-use models::provision::{ProvisionAuth, ProvisionDoc, ProvisionMode, ProvisionService};
+use hackamore_models::provision::{ProvisionAuth, ProvisionDoc, ProvisionMode, ProvisionService};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Relative path (under the home) of the manifest listing every file halter wrote.
-const MANIFEST: &str = ".halter/manifest";
-/// Relative path (under the home) of the CA bundle, when halter terminates TLS.
-const CA_BUNDLE: &str = ".halter/halter-ca.pem";
+/// Relative path (under the home) of the manifest listing every file hackamore wrote.
+const MANIFEST: &str = ".hackamore/manifest";
+/// Relative path (under the home) of the CA bundle, when hackamore terminates TLS.
+const CA_BUNDLE: &str = ".hackamore/hackamore-ca.pem";
 
-/// Fetch the provision doc from the reserved `/.halter/provision` path on the proxy
-/// listener at `proxy_url`, presenting the token via `X-Halter-Token`. The proxy
+/// Fetch the provision doc from the reserved `/.hackamore/provision` path on the proxy
+/// listener at `proxy_url`, presenting the token via `X-Hackamore-Token`. The proxy
 /// listener is the only address a sandboxed consumer can reach; the admin listener
 /// (which also serves the unauthenticated `/mint`) stays operator-only.
 pub async fn fetch_provision(proxy_url: &str, token: &str) -> Result<ProvisionDoc, String> {
-    let url = format!("{}/.halter/provision", proxy_url.trim_end_matches('/'));
+    let url = format!("{}/.hackamore/provision", proxy_url.trim_end_matches('/'));
     let resp = reqwest::Client::new()
         .get(&url)
-        .header("X-Halter-Token", token)
+        .header("X-Hackamore-Token", token)
         .send()
         .await
         .map_err(|e| format!("provision request failed: {e}"))?;
@@ -45,14 +45,14 @@ pub async fn fetch_provision(proxy_url: &str, token: &str) -> Result<ProvisionDo
 /// Render shell `export` lines from a provision doc.
 pub fn render_env(doc: &ProvisionDoc) -> String {
     let mut out = format!(
-        "# halter-agent env (token expires at {} ms)\nexport HALTER_TOKEN='{}'\n\
-         export HALTER_TOKEN_HEADER='X-Halter-Token'\n",
-        doc.expires_at_ms, doc.halter_token
+        "# hackamore-agent env (token expires at {} ms)\nexport HACKAMORE_TOKEN='{}'\n\
+         export HACKAMORE_TOKEN_HEADER='X-Hackamore-Token'\n",
+        doc.expires_at_ms, doc.hackamore_token
     );
-    if !doc.halter_ca.is_empty() {
+    if !doc.hackamore_ca.is_empty() {
         // Point TLS-aware tools that read env (curl, some SDKs) at the bundle.
         out.push_str(&format!(
-            "export HALTER_CA_BUNDLE=\"$HOME/{CA_BUNDLE}\"\n\
+            "export HACKAMORE_CA_BUNDLE=\"$HOME/{CA_BUNDLE}\"\n\
              export AWS_CA_BUNDLE=\"$HOME/{CA_BUNDLE}\"\n\
              export GIT_SSL_CAINFO=\"$HOME/{CA_BUNDLE}\"\n"
         ));
@@ -74,13 +74,13 @@ pub fn render_env(doc: &ProvisionDoc) -> String {
 /// Render a human-readable summary.
 pub fn render_status(doc: &ProvisionDoc) -> String {
     let mut out = format!(
-        "halter token valid until {} ms; {} service(s) reachable:\n",
+        "hackamore token valid until {} ms; {} service(s) reachable:\n",
         doc.expires_at_ms,
         doc.services.len()
     );
     for s in &doc.services {
         let addr = if s.address.is_empty() {
-            "(via halter proxy)".to_string()
+            "(via hackamore proxy)".to_string()
         } else {
             s.address.clone()
         };
@@ -97,25 +97,25 @@ pub fn render_status(doc: &ProvisionDoc) -> String {
 
 fn mode_hint(mode: &ProvisionMode) -> &'static str {
     match mode {
-        ProvisionMode::Inject => "inject (halter supplies the credential)",
+        ProvisionMode::Inject => "inject (hackamore supplies the credential)",
         ProvisionMode::Passthrough => "passthrough (bring your own credential)",
     }
 }
 
 /// Write native tool config for every service into `home` (an isolated directory). Returns
-/// the files written and records them in the manifest. Always writes `halter.env` and (when
-/// halter terminates TLS) the CA bundle; per service it writes git config (github), a
+/// the files written and records them in the manifest. Always writes `hackamore.env` and (when
+/// hackamore terminates TLS) the CA bundle; per service it writes git config (github), a
 /// kubeconfig (k8s), and/or an AWS profile (SigV4).
 pub fn write_configs(home: &Path, doc: &ProvisionDoc) -> std::io::Result<Vec<PathBuf>> {
     let mut written: Vec<PathBuf> = Vec::new();
-    written.push(write(&home.join("halter.env"), &render_env(doc))?);
+    written.push(write(&home.join("hackamore.env"), &render_env(doc))?);
 
     // The CA bundle is written once and referenced by path from each tool's config.
-    let ca_path = if doc.halter_ca.is_empty() {
+    let ca_path = if doc.hackamore_ca.is_empty() {
         None
     } else {
         let p = home.join(CA_BUNDLE);
-        written.push(write(&p, &doc.halter_ca)?);
+        written.push(write(&p, &doc.hackamore_ca)?);
         Some(p)
     };
 
@@ -134,7 +134,7 @@ pub fn write_configs(home: &Path, doc: &ProvisionDoc) -> std::io::Result<Vec<Pat
     Ok(written)
 }
 
-/// Remove every file halter previously wrote under `home`, per its manifest, then the
+/// Remove every file hackamore previously wrote under `home`, per its manifest, then the
 /// manifest itself. Returns the files removed. Idempotent: a missing manifest or
 /// already-removed file is not an error. Nothing outside the manifest is touched.
 pub fn teardown(home: &Path) -> std::io::Result<Vec<PathBuf>> {
@@ -157,7 +157,7 @@ pub fn teardown(home: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-/// The bearer (halter) token a service presents, if its auth is bearer.
+/// The bearer (hackamore) token a service presents, if its auth is bearer.
 fn bearer_token(s: &ProvisionService) -> Option<&str> {
     match &s.auth {
         ProvisionAuth::Bearer(b) => Some(&b.token),
@@ -167,7 +167,7 @@ fn bearer_token(s: &ProvisionService) -> Option<&str> {
 
 fn endpoint(s: &ProvisionService) -> &str {
     if s.address.is_empty() {
-        "https://halter.local"
+        "https://hackamore.local"
     } else {
         &s.address
     }
@@ -181,8 +181,8 @@ fn endpoint_host(s: &ProvisionService) -> &str {
         .trim_end_matches('/')
 }
 
-/// Write a kubeconfig with a static token (no `exec` plugin) pointing at halter. When
-/// halter terminates TLS, the cluster references the CA bundle by path; otherwise the
+/// Write a kubeconfig with a static token (no `exec` plugin) pointing at hackamore. When
+/// hackamore terminates TLS, the cluster references the CA bundle by path; otherwise the
 /// endpoint is plaintext and no CA is needed.
 fn write_kubeconfig(
     home: &Path,
@@ -205,9 +205,9 @@ fn write_kubeconfig(
     write(&home.join(".kube").join("config"), &body)
 }
 
-/// Configure `git` and `gh` to use the halter token: the store-helper credential line
+/// Configure `git` and `gh` to use the hackamore token: the store-helper credential line
 /// (merged, not clobbered), a `.gitconfig` enabling that helper (+ CA when TLS), and a `gh`
-/// `hosts.yml` so `gh` authenticates to the halter-fronted host.
+/// `hosts.yml` so `gh` authenticates to the hackamore-fronted host.
 fn write_github(
     home: &Path,
     s: &ProvisionService,
@@ -239,13 +239,13 @@ fn write_github(
     Ok(vec![creds, gitconfig, gh])
 }
 
-/// Write an AWS profile (dummy credential + halter endpoint) for the `aws` CLI / SDKs:
+/// Write an AWS profile (dummy credential + hackamore endpoint) for the `aws` CLI / SDKs:
 /// `~/.aws/credentials` (the dummy key pair) and `~/.aws/config` (region + endpoint, plus
-/// the CA bundle when halter terminates TLS).
+/// the CA bundle when hackamore terminates TLS).
 fn write_aws(
     home: &Path,
     s: &ProvisionService,
-    a: &models::provision::SigV4Auth,
+    a: &hackamore_models::provision::SigV4Auth,
     ca: Option<&Path>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let creds = format!(
@@ -288,7 +288,7 @@ fn merge_lines(path: &Path, line: &str) -> std::io::Result<String> {
     Ok(out)
 }
 
-/// Record the absolute paths halter wrote into the manifest (one per line), so [`teardown`]
+/// Record the absolute paths hackamore wrote into the manifest (one per line), so [`teardown`]
 /// can later remove exactly them.
 fn write_manifest(home: &Path, written: &[PathBuf]) -> std::io::Result<()> {
     let body = written
@@ -313,7 +313,7 @@ fn write(path: &Path, contents: &str) -> std::io::Result<PathBuf> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use models::provision::{BearerAuth, SigV4Auth};
+    use hackamore_models::provision::{BearerAuth, SigV4Auth};
 
     fn svc(
         target: &str,
@@ -332,8 +332,8 @@ mod tests {
 
     fn doc_with_ca(ca: &str) -> ProvisionDoc {
         ProvisionDoc {
-            halter_token: "tok-abc".into(),
-            halter_ca: ca.into(),
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: ca.into(),
             expires_at_ms: 12345,
             services: vec![
                 svc(
@@ -372,7 +372,7 @@ mod tests {
 
     fn temp_home(tag: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("halter-agent-test-{tag}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("hackamore-agent-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn env_exports_token_and_lists_services() {
         let env = render_env(&doc());
-        assert!(env.contains("export HALTER_TOKEN='tok-abc'"));
+        assert!(env.contains("export HACKAMORE_TOKEN='tok-abc'"));
         assert!(env.contains("service 'github'"));
         assert!(env.contains("service 'aws-acct-a'"));
         // No CA → no CA-bundle exports.
@@ -391,7 +391,7 @@ mod tests {
     fn write_configs_writes_native_files_into_home() {
         let dir = temp_home("native");
         let written = write_configs(&dir, &doc()).unwrap();
-        assert!(written.iter().any(|p| p.ends_with("halter.env")));
+        assert!(written.iter().any(|p| p.ends_with("hackamore.env")));
 
         let kube = std::fs::read_to_string(dir.join(".kube").join("config")).unwrap();
         assert!(kube.contains("token: tok-abc"));
@@ -410,7 +410,7 @@ mod tests {
         let gitconfig = std::fs::read_to_string(dir.join(".gitconfig")).unwrap();
         assert!(gitconfig.contains("helper = store"));
 
-        // gh hosts.yml carries the oauth token for the halter host.
+        // gh hosts.yml carries the oauth token for the hackamore host.
         let gh = std::fs::read_to_string(dir.join(".config").join("gh").join("hosts.yml")).unwrap();
         assert!(gh.contains("oauth_token: tok-abc"));
         assert!(gh.contains("git_protocol: https"));
@@ -452,7 +452,7 @@ mod tests {
         let dir = temp_home("merge");
         std::fs::create_dir_all(&dir).unwrap();
         let creds = dir.join(".git-credentials");
-        // A pre-existing, unrelated credential must survive a halter write.
+        // A pre-existing, unrelated credential must survive a hackamore write.
         std::fs::write(&creds, "https://x-access-token:other@github.example\n").unwrap();
         write_configs(&dir, &doc()).unwrap();
         let body = std::fs::read_to_string(&creds).unwrap();
@@ -460,7 +460,7 @@ mod tests {
             body.contains("other@github.example"),
             "pre-existing line preserved"
         );
-        assert!(body.contains("tok-abc@"), "halter line added");
+        assert!(body.contains("tok-abc@"), "hackamore line added");
         // Writing again does not duplicate.
         write_configs(&dir, &doc()).unwrap();
         let body2 = std::fs::read_to_string(&creds).unwrap();

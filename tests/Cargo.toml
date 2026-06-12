@@ -1,5 +1,5 @@
 [package]
-name = "tests"
+name = "hackamore-tests"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
@@ -8,11 +8,11 @@ publish = false
 # Test-support crate: no workspace restriction lints so helpers can use unwrap freely.
 
 [dependencies]
-models       = { workspace = true }
-policy       = { workspace = true }
-control      = { workspace = true }
-gateway      = { workspace = true }
-halter-agent = { workspace = true }
+hackamore-models = { workspace = true }
+hackamore-policy = { workspace = true }
+hackamore-control = { workspace = true }
+hackamore-gateway = { workspace = true }
+hackamore-agent = { workspace = true }
 serde_json   = { workspace = true }
 http         = { workspace = true }
 bytes        = { workspace = true }

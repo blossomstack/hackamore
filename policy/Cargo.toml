@@ -1,12 +1,12 @@
 [package]
-name = "policy"
+name = "hackamore-policy"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [dependencies]
-models     = { workspace = true }
+hackamore-models = { workspace = true }
 serde_json = { workspace = true }
 
 [lints]

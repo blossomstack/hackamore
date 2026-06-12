@@ -1,10 +1,10 @@
 //! Optional TLS termination for the agent-facing proxy listener.
 //!
-//! halter's baseline model is a reverse proxy reached over plaintext inside a sandbox whose
-//! only egress is halter (see [`crate::server`]). When instead the consumer is configured to
-//! *terminate TLS at halter and trust halter's certificate*, the operator supplies a serving
+//! hackamore's baseline model is a reverse proxy reached over plaintext inside a sandbox whose
+//! only egress is hackamore (see [`crate::server`]). When instead the consumer is configured to
+//! *terminate TLS at hackamore and trust hackamore's certificate*, the operator supplies a serving
 //! cert + key here; the provision doc then carries the CA the consumer must trust
-//! (`ProvisionDoc.halter_ca`), which `halter-agent` writes into each tool's config.
+//! (`ProvisionDoc.hackamore_ca`), which `hackamore-agent` writes into each tool's config.
 //!
 //! The crypto provider is `ring` (matching reqwest's rustls stack), selected explicitly so
 //! this works without rustls's default-provider feature.
@@ -20,8 +20,8 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 pub struct TlsMaterial {
     pub cert_pem: String,
     pub key_pem: String,
-    /// What a consumer adds to its trust store to validate halter — surfaced verbatim in
-    /// the provision doc as `halter_ca`.
+    /// What a consumer adds to its trust store to validate hackamore — surfaced verbatim in
+    /// the provision doc as `hackamore_ca`.
     pub ca_pem: String,
 }
 

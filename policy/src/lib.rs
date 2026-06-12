@@ -1,4 +1,4 @@
-//! The halter policy engine — the reusable decision core.
+//! The hackamore policy engine — the reusable decision core.
 //!
 //! Its entire public surface is one pure function, [`decide`]: given a normalized
 //! [`Action`] and an agent's [`Policy`], it returns a [`Verdict`]. No I/O, no HTTP, no
@@ -11,9 +11,9 @@
 //! names no credentials — the matched service instance owns its credential, and the data
 //! plane attaches the inject/passthrough obligation.
 
-use models::action::{Action, Verb};
-use models::policy::{Condition, Effect, Match, Policy, Rule};
-use models::verdict::{DenyReason, Verdict};
+use hackamore_models::action::{Action, Verb};
+use hackamore_models::policy::{Condition, Effect, Match, Policy, Rule};
+use hackamore_models::verdict::{DenyReason, Verdict};
 use serde_json::Value;
 
 /// Decide whether `action` is permitted under `policy`.
@@ -109,11 +109,11 @@ fn lookup<'a>(fields: &'a Value, path: &str) -> Option<&'a Value> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use models::action::{Action, CrudKind, Resource, Verb};
-    use models::policy::{
+    use hackamore_models::action::{Action, CrudKind, Resource, Verb};
+    use hackamore_models::policy::{
         Condition, Effect, EqualsCondition, ExistsCondition, Match, OneOfCondition, Policy, Rule,
     };
-    use models::verdict::{DenyReason, Verdict};
+    use hackamore_models::verdict::{DenyReason, Verdict};
 
     fn empty_match() -> Match {
         Match {

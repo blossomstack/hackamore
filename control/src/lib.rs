@@ -1,4 +1,4 @@
-//! halter control plane: short-lived policy-bound token minting, the credential vault,
+//! hackamore control plane: short-lived policy-bound token minting, the credential vault,
 //! and the audit sink. The data plane ([`gateway`]) holds an `Arc<ControlPlane>` and
 //! consults it on every request; the policy engine ([`policy`]) never touches any of
 //! this — it stays pure. There is no agent registry: a token *is* a policy binding.

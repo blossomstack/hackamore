@@ -1,8 +1,8 @@
 //! HTTP `Upgrade` relay — the transport that lets `kubectl exec` / `port-forward` /
-//! `logs -f` / `watch` (WebSocket / SPDY) work through halter.
+//! `logs -f` / `watch` (WebSocket / SPDY) work through hackamore.
 //!
 //! A normal request is decided, the credential injected, and the response *streamed*
-//! ([`crate::server::forward`]). An upgrade is different: after the policy allows it, halter
+//! ([`crate::server::forward`]). An upgrade is different: after the policy allows it, hackamore
 //! must open its own connection to the upstream, replay the upgrade, and — once both ends
 //! return `101 Switching Protocols` — tunnel raw bytes in both directions for the life of
 //! the connection. The policy decision still happens first on the normalized request, so an
@@ -10,7 +10,7 @@
 //!
 //! Upgrade/`Connection`/`Sec-WebSocket-*` headers are hop-by-hop and are normally stripped;
 //! [`carry_upgrade_headers`] re-adds them to the (credential-injected) forward plan because
-//! halter is the next hop establishing the upgrade with the upstream.
+//! hackamore is the next hop establishing the upgrade with the upstream.
 
 use crate::core::ForwardPlan;
 use axum::response::{IntoResponse, Response};
@@ -24,7 +24,7 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::rustls::ClientConfig;
 use tokio_rustls::rustls::pki_types::ServerName;
 
-/// Hop-by-hop headers an upgrade needs forwarded to the upstream (halter is the next hop).
+/// Hop-by-hop headers an upgrade needs forwarded to the upstream (hackamore is the next hop).
 const UPGRADE_HEADERS: [&str; 6] = [
     "connection",
     "upgrade",

@@ -1,12 +1,12 @@
 //! Integration test for the GitHub-App credential provider's HTTP exchange: a mock GitHub
 //! `access_tokens` endpoint stands in for api.github.com, and we assert the provider signs
 //! an app JWT, presents it, and returns the minted installation token. (The EKS presigner,
-//! the JWT signing, and the caching/rotation logic are unit-tested in `control::providers`.)
+//! the JWT signing, and the caching/rotation logic are unit-tested in `hackamore_control::providers`.)
 
 use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
-use control::{CredentialProvider, GitHubAppProvider, pkcs8_from_pem};
+use hackamore_control::{CredentialProvider, GitHubAppProvider, pkcs8_from_pem};
 use std::sync::{Arc, Mutex};
 
 /// The bearer JWT the mock received, captured so the test can assert the provider presented

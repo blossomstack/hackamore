@@ -1,23 +1,23 @@
 [package]
-name = "cli"
+name = "hackamore-cli"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [lib]
-name = "cli"
+name = "hackamore_cli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "halter"
+name = "hackamore"
 path = "src/main.rs"
 
 [dependencies]
-models     = { workspace = true }
-policy     = { workspace = true }
-control    = { workspace = true }
-gateway    = { workspace = true }
+hackamore-models = { workspace = true }
+hackamore-policy = { workspace = true }
+hackamore-control = { workspace = true }
+hackamore-gateway = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
 clap       = { workspace = true }

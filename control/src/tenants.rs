@@ -1,4 +1,4 @@
-//! Multi-tenant mint authorization. When one halter serves more than one trust domain,
+//! Multi-tenant mint authorization. When one hackamore serves more than one trust domain,
 //! a tenant authenticates to the mint endpoint and may only mint tokens scoped to the
 //! targets it **owns**. Without this, any caller could submit a policy naming another
 //! tenant's target and launder its credential.

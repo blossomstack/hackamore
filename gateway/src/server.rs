@@ -1,16 +1,16 @@
 //! The HTTP data plane: an axum reverse proxy that drives [`Gateway`], plus a small
 //! admin API for minting tokens.
 //!
-//! halter runs as a reverse proxy, not a transparent MITM: the agent is configured to
-//! address halter directly and the sandbox (nono/Seatbelt/Landlock + netns) guarantees
-//! halter is the *only* reachable destination, so the agent cannot bypass it. The agent
-//! presents its halter token, never the real credential.
+//! hackamore runs as a reverse proxy, not a transparent MITM: the agent is configured to
+//! address hackamore directly and the sandbox (nono/Seatbelt/Landlock + netns) guarantees
+//! hackamore is the *only* reachable destination, so the agent cannot bypass it. The agent
+//! presents its hackamore token, never the real credential.
 //!
 //! By default the agent-facing listener is plaintext (the confined sandbox makes
 //! interception a non-issue). When a deployment wants the consumer to terminate TLS at
-//! halter and trust its certificate, [`serve`] takes an optional rustls config and the
+//! hackamore and trust its certificate, [`serve`] takes an optional rustls config and the
 //! proxy listener speaks HTTPS ([`serve_proxy_tls`]); the CA the consumer must trust rides
-//! out in the provision doc as `halter_ca`. The admin API stays plaintext on its
+//! out in the provision doc as `hackamore_ca`. The admin API stays plaintext on its
 //! localhost-only listener either way.
 
 use crate::core::{ForwardPlan, Gateway, Outcome, ProxyRequest, Rejection};
@@ -19,17 +19,17 @@ use axum::body::Body;
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use hackamore_models::control::{MintRequest, RevokeRequest, RevokeResponse};
 use http::StatusCode;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use hyper_util::service::TowerToHyperService;
-use models::control::{MintRequest, RevokeRequest, RevokeResponse};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
 
-/// Maximum request body halter will buffer (25 MiB). Larger requests are rejected.
+/// Maximum request body hackamore will buffer (25 MiB). Larger requests are rejected.
 const MAX_BODY: usize = 25 * 1024 * 1024;
 
 /// How often the background sweeper reclaims expired token-table entries.
@@ -51,25 +51,25 @@ impl ServerState {
 }
 
 /// The proxy router: every method and path is captured and run through the gateway,
-/// except the reserved `/.halter/` prefix, which halter claims for its own
+/// except the reserved `/.hackamore/` prefix, which hackamore claims for its own
 /// consumer-facing endpoints before Host-based service routing runs.
 ///
-/// `GET /.halter/provision` serves the token-authenticated provision doc on the
+/// `GET /.hackamore/provision` serves the token-authenticated provision doc on the
 /// agent-facing listener, so a sandboxed consumer whose *only* network egress is this
 /// proxy can self-provision. It lives here and **only** here: the admin listener also
 /// serves the unauthenticated `/mint`, so it must never be reachable from a sandbox.
-/// Documented tradeoff: a hypothetical upstream path beginning with `/.halter/` is
+/// Documented tradeoff: a hypothetical upstream path beginning with `/.hackamore/` is
 /// shadowed by this reservation.
 pub fn proxy_router(state: Arc<ServerState>) -> Router {
     Router::new()
-        .route("/.halter/provision", get(provision_handler))
+        .route("/.hackamore/provision", get(provision_handler))
         .fallback(proxy_handler)
         .with_state(state)
 }
 
 /// The admin router: `POST /mint` issues a launch token for a submitted policy. Bind
 /// this on a separate, localhost-only listener — it is operator/orchestrator surface,
-/// not agent surface. Provisioning is served only from `/.halter/provision` on the
+/// not agent surface. Provisioning is served only from `/.hackamore/provision` on the
 /// proxy listener (see [`proxy_router`]).
 pub fn admin_router(state: Arc<ServerState>) -> Router {
     Router::new()
@@ -80,7 +80,7 @@ pub fn admin_router(state: Arc<ServerState>) -> Router {
 
 /// Serve both routers until shutdown: the proxy on `proxy_addr`, the admin API on
 /// `admin_addr`. When `tls` is `Some`, the agent-facing proxy listener terminates TLS with
-/// that rustls config (the consumer-trusts-halter's-cert model); the admin API always
+/// that rustls config (the consumer-trusts-hackamore's-cert model); the admin API always
 /// stays plaintext on its localhost-only listener.
 pub async fn serve(
     proxy_addr: std::net::SocketAddr,
@@ -92,7 +92,7 @@ pub async fn serve(
     let proxy_listener = tokio::net::TcpListener::bind(proxy_addr).await?;
     let admin_listener = tokio::net::TcpListener::bind(admin_addr).await?;
     let scheme = if tls.is_some() { "https" } else { "http" };
-    tracing::info!(%proxy_addr, %admin_addr, proxy_scheme = scheme, "halter listening");
+    tracing::info!(%proxy_addr, %admin_addr, proxy_scheme = scheme, "hackamore listening");
 
     spawn_sweeper(state.clone());
 
@@ -210,10 +210,10 @@ async fn mint_handler(
     Json(req): Json<MintRequest>,
 ) -> Response {
     // No agent identity: a structurally valid policy mints a token. When tenants are
-    // configured, the `X-Halter-Tenant` credential must own every target the policy names
+    // configured, the `X-Hackamore-Tenant` credential must own every target the policy names
     // (fail closed); single-trust-domain deployments leave tenancy unconfigured (open).
     let tenant = headers
-        .get("x-halter-tenant")
+        .get("x-hackamore-tenant")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|t| !t.is_empty());
@@ -236,27 +236,30 @@ async fn revoke_handler(
     (StatusCode::OK, Json(RevokeResponse { revoked })).into_response()
 }
 
-/// The provision endpoint — return the consumer-setup bundle for the presented halter
-/// token (in `X-Halter-Token` or `Authorization`). The doc carries no real upstream
+/// The provision endpoint — return the consumer-setup bundle for the presented hackamore
+/// token (in `X-Hackamore-Token` or `Authorization`). The doc carries no real upstream
 /// secrets, and the handler authenticates purely from headers. It is mounted only on
-/// the proxy listener at `GET /.halter/provision` — the one address a sandbox can reach.
+/// the proxy listener at `GET /.hackamore/provision` — the one address a sandbox can reach.
 async fn provision_handler(
     State(state): State<Arc<ServerState>>,
     headers: http::HeaderMap,
 ) -> Response {
     let Some(token) = crate::core::token_from_headers(&headers) else {
-        return error_response(StatusCode::UNAUTHORIZED, "missing halter token");
+        return error_response(StatusCode::UNAUTHORIZED, "missing hackamore token");
     };
     match state.gateway.provision(&token) {
         Some(doc) => (StatusCode::OK, Json(doc)).into_response(),
-        None => error_response(StatusCode::UNAUTHORIZED, "unknown or expired halter token"),
+        None => error_response(
+            StatusCode::UNAUTHORIZED,
+            "unknown or expired hackamore token",
+        ),
     }
 }
 
 /// Execute the planned upstream request and relay the response back to the agent.
 ///
 /// The response body is **streamed**, never buffered, so Server-Sent Events, chunked
-/// responses, and long-polls flow through halter transparently. (The request body is
+/// responses, and long-polls flow through hackamore transparently. (The request body is
 /// buffered earlier because policy conditions may inspect it; responses have no such
 /// need.)
 async fn forward(client: &reqwest::Client, plan: ForwardPlan) -> Response {

@@ -1,4 +1,4 @@
-//! halter data plane — the reverse proxy that enforces policy decisions.
+//! hackamore data plane — the reverse proxy that enforces policy decisions.
 //!
 //! - [`normalize`] turns an HTTP request into the engine's `Action` (the protocol
 //!   adapter; generic by default, with per-service flavors).

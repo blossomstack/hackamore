@@ -2,9 +2,11 @@
 //! exercise: SSE streaming relay and fail-closed Host routing. (Per-service injection and
 //! AWS-query action gating live in `use_cases.rs`.)
 
-use gateway::{Flavor, Outbound, Service};
-use models::policy::Policy;
-use tests::{start_halter_services, start_halter_tls_services, start_mock_upstream};
+use hackamore_gateway::{Flavor, Outbound, Service};
+use hackamore_models::policy::Policy;
+use hackamore_tests::{
+    start_hackamore_services, start_hackamore_tls_services, start_mock_upstream,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn allow_all() -> Policy {
@@ -23,12 +25,12 @@ fn service(name: &str, host: &str, flavor: Flavor, credential: &str, upstream: &
         })
 }
 
-/// SSE transport: an event-stream response is relayed through halter with its
+/// SSE transport: an event-stream response is relayed through hackamore with its
 /// `text/event-stream` content type and full payload intact.
 #[tokio::test]
 async fn sse_stream_is_relayed() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter_services(vec![service(
+    let hackamore = start_hackamore_services(vec![service(
         "events",
         "*",
         Flavor::Generic,
@@ -36,11 +38,11 @@ async fn sse_stream_is_relayed() {
         &upstream.base_url,
     )])
     .await;
-    halter.add_credential("svc-key", "real");
-    let token = halter.mint_token(&allow_all(), 3600).await;
+    hackamore.add_credential("svc-key", "real");
+    let token = hackamore.mint_token(&allow_all(), 3600).await;
 
     let resp = reqwest::Client::new()
-        .get(format!("{}/v1/stream", halter.proxy_url))
+        .get(format!("{}/v1/stream", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
@@ -57,19 +59,19 @@ async fn sse_stream_is_relayed() {
     assert!(body.contains("data: three"));
 }
 
-/// TLS termination: when halter is configured with a serving cert, the agent-facing proxy
+/// TLS termination: when hackamore is configured with a serving cert, the agent-facing proxy
 /// speaks HTTPS, a consumer that trusts the CA can drive a request through it end to end,
-/// and the provision doc carries that CA as `halter_ca`.
+/// and the provision doc carries that CA as `hackamore_ca`.
 #[tokio::test]
 async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
     let upstream = start_mock_upstream().await;
     let ca = include_str!("../../gateway/testdata/tls_ca.pem");
-    let tls = gateway::TlsMaterial {
+    let tls = hackamore_gateway::TlsMaterial {
         cert_pem: include_str!("../../gateway/testdata/tls_cert.pem").to_string(),
         key_pem: include_str!("../../gateway/testdata/tls_key.pem").to_string(),
         ca_pem: ca.to_string(),
     };
-    let halter = start_halter_tls_services(
+    let hackamore = start_hackamore_tls_services(
         vec![service(
             "svc",
             "*",
@@ -80,28 +82,28 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
         tls,
     )
     .await;
-    halter.add_credential("svc-key", "real");
-    let token = halter.mint_token(&allow_all(), 3600).await;
+    hackamore.add_credential("svc-key", "real");
+    let token = hackamore.mint_token(&allow_all(), 3600).await;
 
-    // A client that trusts halter's CA completes the TLS handshake and the request succeeds.
+    // A client that trusts hackamore's CA completes the TLS handshake and the request succeeds.
     let client = reqwest::Client::builder()
         .add_root_certificate(reqwest::Certificate::from_pem(ca.as_bytes()).unwrap())
         .build()
         .unwrap();
     let resp = client
-        .get(format!("{}/v1/x", halter.proxy_url))
+        .get(format!("{}/v1/x", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert!(halter.proxy_url.starts_with("https://"));
+    assert!(hackamore.proxy_url.starts_with("https://"));
 
     // The provision doc surfaces the CA the consumer must trust. It is served from the
     // reserved path on the (HTTPS) proxy listener, so reuse the CA-trusting client.
     let doc: serde_json::Value = client
-        .get(format!("{}/.halter/provision", halter.proxy_url))
-        .header("X-Halter-Token", &token)
+        .get(format!("{}/.hackamore/provision", hackamore.proxy_url))
+        .header("X-Hackamore-Token", &token)
         .send()
         .await
         .unwrap()
@@ -109,7 +111,7 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
         .await
         .unwrap();
     assert!(
-        doc["halterCa"]
+        doc["hackamoreCa"]
             .as_str()
             .unwrap()
             .contains("BEGIN CERTIFICATE")
@@ -117,13 +119,13 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
 }
 
 /// HTTP Upgrade transport: an allowed `Connection: Upgrade` request (the shape of `kubectl
-/// exec`/`port-forward`/`watch`) is tunneled through halter to the upstream, which switches
+/// exec`/`port-forward`/`watch`) is tunneled through hackamore to the upstream, which switches
 /// protocols and echoes bytes back over the spliced connection — with the real credential
-/// injected, not the halter token.
+/// injected, not the hackamore token.
 #[tokio::test]
 async fn allowed_upgrade_is_tunneled_to_upstream() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter_services(vec![service(
+    let hackamore = start_hackamore_services(vec![service(
         "svc",
         "*",
         Flavor::Generic,
@@ -131,10 +133,13 @@ async fn allowed_upgrade_is_tunneled_to_upstream() {
         &upstream.base_url,
     )])
     .await;
-    halter.add_credential("svc-key", "real");
-    let token = halter.mint_token(&allow_all(), 3600).await;
+    hackamore.add_credential("svc-key", "real");
+    let token = hackamore.mint_token(&allow_all(), 3600).await;
 
-    let addr = halter.proxy_url.trim_start_matches("http://").to_string();
+    let addr = hackamore
+        .proxy_url
+        .trim_start_matches("http://")
+        .to_string();
     let mut stream = tokio::net::TcpStream::connect(&addr).await.unwrap();
     let req = format!(
         "GET /exec HTTP/1.1\r\nHost: {addr}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
@@ -160,13 +165,13 @@ async fn allowed_upgrade_is_tunneled_to_upstream() {
         "expected 101 Switching Protocols, got:\n{head}"
     );
 
-    // The tunnel is live: bytes we send are echoed back by the upstream through halter.
-    stream.write_all(b"ping-through-halter").await.unwrap();
-    let mut echo = vec![0u8; b"ping-through-halter".len()];
+    // The tunnel is live: bytes we send are echoed back by the upstream through hackamore.
+    stream.write_all(b"ping-through-hackamore").await.unwrap();
+    let mut echo = vec![0u8; b"ping-through-hackamore".len()];
     stream.read_exact(&mut echo).await.unwrap();
-    assert_eq!(&echo, b"ping-through-halter");
+    assert_eq!(&echo, b"ping-through-hackamore");
 
-    // The upstream saw the injected credential, not the halter token.
+    // The upstream saw the injected credential, not the hackamore token.
     let got = upstream.requests();
     assert_eq!(got[0].path, "/exec");
     assert_eq!(got[0].authorization.as_deref(), Some("Bearer real"));
@@ -178,7 +183,7 @@ async fn allowed_upgrade_is_tunneled_to_upstream() {
 async fn unrouted_host_is_denied() {
     let upstream = start_mock_upstream().await;
     // Only "api.github.com" is configured; the test client's Host (127.0.0.1) won't match.
-    let halter = start_halter_services(vec![service(
+    let hackamore = start_hackamore_services(vec![service(
         "github",
         "api.github.com",
         Flavor::Github,
@@ -186,11 +191,11 @@ async fn unrouted_host_is_denied() {
         &upstream.base_url,
     )])
     .await;
-    halter.add_credential("github-app", "real");
-    let token = halter.mint_token(&allow_all(), 3600).await;
+    hackamore.add_credential("github-app", "real");
+    let token = hackamore.mint_token(&allow_all(), 3600).await;
 
     let resp = reqwest::Client::new()
-        .get(format!("{}/repos/o/r", halter.proxy_url))
+        .get(format!("{}/repos/o/r", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await

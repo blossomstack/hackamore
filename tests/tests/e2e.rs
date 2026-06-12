@@ -1,9 +1,9 @@
-//! Full-stack e2e tests: a real halter server (reverse proxy + admin API) in front of a
+//! Full-stack e2e tests: a real hackamore server (reverse proxy + admin API) in front of a
 //! mock GitHub upstream, driven over HTTP exactly as a sandboxed agent's `gh`/`git`
 //! would drive it. Each test asserts one user story end to end.
 
-use models::policy::Policy;
-use tests::{start_halter, start_mock_upstream};
+use hackamore_models::policy::Policy;
+use hackamore_tests::{start_hackamore, start_mock_upstream};
 
 fn policy_from(json: &str) -> Policy {
     serde_json::from_str(json).expect("valid policy json")
@@ -41,16 +41,16 @@ const PR_TO_DEVELOP_ONLY: &str = r#"{
 #[tokio::test]
 async fn pr_create_gated_by_base_branch() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
-    let token = halter
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
+    let token = hackamore
         .mint_token(&policy_from(PR_TO_DEVELOP_ONLY), 3600)
         .await;
     let client = reqwest::Client::new();
 
     // Allowed: base = develop.
     let ok = client
-        .post(format!("{}/repos/octocat/hello/pulls", halter.proxy_url))
+        .post(format!("{}/repos/octocat/hello/pulls", hackamore.proxy_url))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "base": "develop", "title": "feature" }))
         .send()
@@ -60,7 +60,7 @@ async fn pr_create_gated_by_base_branch() {
 
     // Denied: base = main.
     let denied = client
-        .post(format!("{}/repos/octocat/hello/pulls", halter.proxy_url))
+        .post(format!("{}/repos/octocat/hello/pulls", hackamore.proxy_url))
         .bearer_auth(&token)
         .json(&serde_json::json!({ "base": "main", "title": "sneaky" }))
         .send()
@@ -93,14 +93,16 @@ const OCTOCAT_READS: &str = r#"{
 #[tokio::test]
 async fn path_traversal_cannot_escape_resource_scope() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
-    let token = halter.mint_token(&policy_from(OCTOCAT_READS), 3600).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
+    let token = hackamore
+        .mint_token(&policy_from(OCTOCAT_READS), 3600)
+        .await;
     let client = reqwest::Client::new();
 
     // In-scope read is allowed and forwarded.
     let ok = client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
@@ -109,7 +111,10 @@ async fn path_traversal_cannot_escape_resource_scope() {
 
     // `..` traversal out of octocat's repos → canonicalizes to /repos/evil/secret → denied.
     let traversal = client
-        .get(format!("{}/repos/octocat/../evil/secret", halter.proxy_url))
+        .get(format!(
+            "{}/repos/octocat/../evil/secret",
+            hackamore.proxy_url
+        ))
         .bearer_auth(&token)
         .send()
         .await
@@ -120,7 +125,7 @@ async fn path_traversal_cannot_escape_resource_scope() {
     let encoded = client
         .get(format!(
             "{}/repos/octocat/%2e%2e/evil/secret",
-            halter.proxy_url
+            hackamore.proxy_url
         ))
         .bearer_auth(&token)
         .send()
@@ -136,19 +141,19 @@ async fn path_traversal_cannot_escape_resource_scope() {
 #[tokio::test]
 async fn missing_or_invalid_token_is_unauthorized() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
     let client = reqwest::Client::new();
 
     let no_auth = client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .send()
         .await
         .unwrap();
     assert_eq!(no_auth.status(), 401);
 
     let bad_auth = client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth("not-a-real-token")
         .send()
         .await
@@ -162,14 +167,14 @@ async fn missing_or_invalid_token_is_unauthorized() {
 #[tokio::test]
 async fn revoked_token_is_rejected() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
-    let token = halter.mint_token(&policy_from(READ_ONLY), 3600).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
+    let token = hackamore.mint_token(&policy_from(READ_ONLY), 3600).await;
     let client = reqwest::Client::new();
 
     // Works before revocation.
     let ok = client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
@@ -178,7 +183,7 @@ async fn revoked_token_is_rejected() {
 
     // Revoke via the admin API.
     let revoke = client
-        .post(format!("{}/revoke", halter.admin_url))
+        .post(format!("{}/revoke", hackamore.admin_url))
         .json(&serde_json::json!({ "token": token }))
         .send()
         .await
@@ -191,7 +196,7 @@ async fn revoked_token_is_rejected() {
 
     // The same token is now unauthorized.
     let after = client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
@@ -200,7 +205,7 @@ async fn revoked_token_is_rejected() {
 
     // Revoking an unknown token reports `revoked: false`.
     let again = client
-        .post(format!("{}/revoke", halter.admin_url))
+        .post(format!("{}/revoke", hackamore.admin_url))
         .json(&serde_json::json!({ "token": "never-existed" }))
         .send()
         .await
@@ -218,9 +223,9 @@ async fn revoked_token_is_rejected() {
 #[tokio::test]
 async fn tenant_mint_is_scoped_to_owned_targets() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
     // The single catch-all service is named "github"; tenant-a owns only it.
-    halter
+    hackamore
         .control
         .tenants
         .insert("tenant-a", ["github".to_string()]);
@@ -233,10 +238,10 @@ async fn tenant_mint_is_scoped_to_owned_targets() {
             "ttlSeconds": 60,
         });
         let mut r = client
-            .post(format!("{}/mint", halter.admin_url))
+            .post(format!("{}/mint", hackamore.admin_url))
             .json(&body);
         if let Some(t) = tenant {
-            r = r.header("X-Halter-Tenant", t);
+            r = r.header("X-Hackamore-Tenant", t);
         }
         r.send()
     };
@@ -258,27 +263,27 @@ async fn tenant_mint_is_scoped_to_owned_targets() {
 }
 
 /// User story: a sandboxed consumer whose only egress is the proxy listener fetches its
-/// setup bundle from the reserved `/.halter/provision` path. A missing or unknown token
+/// setup bundle from the reserved `/.hackamore/provision` path. A missing or unknown token
 /// is rejected, provisioning never touches the upstream, and the endpoint exists *only*
 /// on the proxy — the admin listener does not serve it.
 #[tokio::test]
 async fn provision_is_served_from_the_proxy_listener() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
-    let token = halter.mint_token(&policy_from(READ_ONLY), 3600).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
+    let token = hackamore.mint_token(&policy_from(READ_ONLY), 3600).await;
     let client = reqwest::Client::new();
 
     // Token-holder via the PROXY listener → 200 with the setup bundle.
     let via_proxy = client
-        .get(format!("{}/.halter/provision", halter.proxy_url))
-        .header("X-Halter-Token", &token)
+        .get(format!("{}/.hackamore/provision", hackamore.proxy_url))
+        .header("X-Hackamore-Token", &token)
         .send()
         .await
         .unwrap();
     assert_eq!(via_proxy.status(), 200);
     let proxy_doc: serde_json::Value = via_proxy.json().await.unwrap();
-    assert_eq!(proxy_doc["halterToken"], token);
+    assert_eq!(proxy_doc["hackamoreToken"], token);
     // The github service (allow-all-targets policy) is surfaced, and no real secret
     // leaks into the doc.
     let services = proxy_doc["services"].as_array().unwrap();
@@ -287,8 +292,8 @@ async fn provision_is_served_from_the_proxy_listener() {
 
     // The admin listener does NOT serve provisioning — the back-compat route is gone.
     let via_admin = client
-        .get(format!("{}/provision", halter.admin_url))
-        .header("X-Halter-Token", &token)
+        .get(format!("{}/provision", hackamore.admin_url))
+        .header("X-Hackamore-Token", &token)
         .send()
         .await
         .unwrap();
@@ -296,7 +301,7 @@ async fn provision_is_served_from_the_proxy_listener() {
 
     // Missing token → 401.
     let no_token = client
-        .get(format!("{}/.halter/provision", halter.proxy_url))
+        .get(format!("{}/.hackamore/provision", hackamore.proxy_url))
         .send()
         .await
         .unwrap();
@@ -304,14 +309,14 @@ async fn provision_is_served_from_the_proxy_listener() {
 
     // Unknown/expired token → 401.
     let bad_token = client
-        .get(format!("{}/.halter/provision", halter.proxy_url))
-        .header("X-Halter-Token", "never-existed")
+        .get(format!("{}/.hackamore/provision", hackamore.proxy_url))
+        .header("X-Hackamore-Token", "never-existed")
         .send()
         .await
         .unwrap();
     assert_eq!(bad_token.status(), 401);
 
-    // The reserved prefix is halter surface: nothing reached the upstream.
+    // The reserved prefix is hackamore surface: nothing reached the upstream.
     assert!(!upstream.was_called());
 }
 
@@ -323,8 +328,8 @@ fn resp_text_contains(doc: &serde_json::Value, needle: &str) -> bool {
 #[tokio::test]
 async fn admin_mint_accepts_any_valid_policy() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    let resp = halter.mint(&policy_from(READ_ONLY), 3600).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    let resp = hackamore.mint(&policy_from(READ_ONLY), 3600).await;
     assert!(resp.status().is_success());
     let value: serde_json::Value = resp.json().await.unwrap();
     assert!(value["token"].as_str().is_some());
@@ -334,26 +339,26 @@ async fn admin_mint_accepts_any_valid_policy() {
 #[tokio::test]
 async fn decisions_are_audited() {
     let upstream = start_mock_upstream().await;
-    let halter = start_halter(&upstream.base_url).await;
-    halter.add_credential("github-app", "real-secret-token");
-    let token = halter.mint_token(&policy_from(READ_ONLY), 3600).await;
+    let hackamore = start_hackamore(&upstream.base_url).await;
+    hackamore.add_credential("github-app", "real-secret-token");
+    let token = hackamore.mint_token(&policy_from(READ_ONLY), 3600).await;
     let client = reqwest::Client::new();
 
     client
-        .get(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .get(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
     client
-        .delete(format!("{}/repos/octocat/hello", halter.proxy_url))
+        .delete(format!("{}/repos/octocat/hello", hackamore.proxy_url))
         .bearer_auth(&token)
         .send()
         .await
         .unwrap();
 
-    let events = halter.audit.events();
+    let events = hackamore.audit.events();
     assert_eq!(events.len(), 2, "one audit record per decision");
-    assert_eq!(events[0].decision, models::audit::Decision::Allow);
-    assert_eq!(events[1].decision, models::audit::Decision::Deny);
+    assert_eq!(events[0].decision, hackamore_models::audit::Decision::Allow);
+    assert_eq!(events[1].decision, hackamore_models::audit::Decision::Deny);
 }

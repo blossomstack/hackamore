@@ -1,7 +1,7 @@
-# halter
+# hackamore
 
 JIT, policy-scoped access for **untrusted** AI agents to external services (GitHub
-first). The agent runs in a sandbox whose only network egress is the halter proxy; it
+first). The agent runs in a sandbox whose only network egress is the hackamore proxy; it
 never holds a real credential. The proxy normalizes each request into an `Action`, a
 reusable policy engine decides allow/deny, and on allow the proxy injects a real
 short-lived credential the agent never sees.
@@ -11,19 +11,19 @@ short-lived credential the agent never sees.
 Three planes, with the policy engine deliberately decoupled from the data plane so it
 can be reused by any proxy (hudsucker, Envoy `ext_authz`, …) in future:
 
-- **`policy`** — the reusable engine. Pure: `decide(&Action, &Policy) -> Verdict`. No
-  I/O, no HTTP, no async. The `Action`/`Verdict` contract (in `models`) is the
+- **`hackamore-policy`** — the reusable engine. Pure: `decide(&Action, &Policy) -> Verdict`. No
+  I/O, no HTTP, no async. The `Action`/`Verdict` contract (in `hackamore-models`) is the
   portability boundary.
-- **`control`** — the control plane: agent→policy registry, short-lived token minting,
+- **`hackamore-control`** — the control plane: agent→policy registry, short-lived token minting,
   the credential vault (resolves a `CredentialRef` to a real secret), and the audit
   sink. Secrets never leave this crate as plain `String`.
-- **`gateway`** — the data plane. A reverse proxy that translates an HTTP request into
-  an `Action`, calls `policy::decide`, enforces the `Verdict` (deny → 403; allow →
+- **`hackamore-gateway`** — the data plane. A reverse proxy that translates an HTTP request into
+  an `Action`, calls `hackamore_policy::decide`, enforces the `Verdict` (deny → 403; allow →
   inject credential + forward), and emits an audit event. Confinement (forcing the
   agent's egress through the gateway) is the sandbox's job — see horsie's nono caps.
-- **`cli`** — the `halter` binary: serve the gateway + admin API, mint tokens.
-- **`models`** — fluorite-generated protocol/contract types.
-- **`tests`** — full-stack e2e tests.
+- **`hackamore-cli`** — the `hackamore` binary: serve the gateway + admin API, mint tokens.
+- **`hackamore-models`** — fluorite-generated protocol/contract types.
+- **`hackamore-tests`** — full-stack e2e tests.
 
 ## Design philosophy
 
@@ -64,13 +64,13 @@ types — any data transported between modules or between server and clients (th
 `Action`/`Verdict` contract, audit events, the control-plane mint API).
 
 - Define schemas as `.fl` files under `fluorite/` at the workspace root.
-- The `models` crate runs `fluorite_codegen` in `build.rs` and exposes generated types
+- The `hackamore-models` crate runs `fluorite_codegen` in `build.rs` and exposes generated types
   via `models::<package>::*`.
 - Generated types automatically derive `Debug`, `Clone`, `PartialEq`, `Serialize`,
   `Deserialize`, `JsonSchema`.
 - Add hand-written convenience methods in `models/src/lib.rs` (not in the schema).
 - **Never use fluorite for persisted data structures** (credential vault entries, the
-  in-memory token table). Those are owned by `control` and evolve independently.
+  in-memory token table). Those are owned by `hackamore-control` and evolve independently.
 
 ## Tests
 

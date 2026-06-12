@@ -1,12 +1,12 @@
 //! AWS Signature Version 4 — the one outbound auth mechanism that is a *request
-//! transform* rather than a header set. halter re-signs an allowed request with the real
+//! transform* rather than a header set. hackamore re-signs an allowed request with the real
 //! account credential before forwarding (the consumer never holds it). The same
 //! primitive [`verify`]s an inbound signature against a minted dummy credential.
 //!
 //! Built on `ring` (SHA-256 + HMAC), no AWS SDK. Two things matter for real-CLI fidelity:
 //!
 //! 1. **The inbound check honors the request's own `SignedHeaders`.** A real `aws` CLI
-//!    signs a larger, service-specific header set than halter's own minimal signer; we
+//!    signs a larger, service-specific header set than hackamore's own minimal signer; we
 //!    must recompute the canonical request over *exactly* the headers the client listed,
 //!    reading their live values, not a fixed set.
 //! 2. **Canonicalization matches AWS.** URI paths and query strings are percent-encoded
@@ -15,7 +15,7 @@
 
 use ring::{digest, hmac};
 
-/// Maximum clock skew between the request's `x-amz-date` and halter's clock. Outside this
+/// Maximum clock skew between the request's `x-amz-date` and hackamore's clock. Outside this
 /// window an inbound signature is rejected as stale (replay/clock-skew bound). AWS itself
 /// uses 5 minutes.
 const MAX_SKEW_MS: u64 = 5 * 60 * 1000;
@@ -33,7 +33,7 @@ pub struct Signed {
     pub content_sha256: String,
 }
 
-/// halter's own outbound signer uses this minimal header set — the common AWS request
+/// hackamore's own outbound signer uses this minimal header set — the common AWS request
 /// shape, accepted by every service. (The *inbound* check is not limited to this set; it
 /// honors whatever the client signed.)
 const OUTBOUND_SIGNED_HEADERS: &str = "host;x-amz-content-sha256;x-amz-date";
@@ -173,7 +173,7 @@ pub fn verify(
     body: &[u8],
     now_ms: u64,
 ) -> Result<(), VerifyError> {
-    // Freshness: the signed `x-amz-date` must be within the skew window of halter's clock.
+    // Freshness: the signed `x-amz-date` must be within the skew window of hackamore's clock.
     let amz_date = header_value(headers, "x-amz-date").ok_or(VerifyError::Stale)?;
     let signed_ms = parse_amz_datetime(&amz_date).ok_or(VerifyError::Stale)?;
     if now_ms.abs_diff(signed_ms) > MAX_SKEW_MS {

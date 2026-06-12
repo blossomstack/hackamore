@@ -1,15 +1,18 @@
-//! `halter-agent` — the consumer-side setup CLI (thin wrapper over the `halter_agent`
+//! `hackamore-agent` — the consumer-side setup CLI (thin wrapper over the `hackamore_agent`
 //! library crate).
 //!
 //! A sandboxed consumer runs one command to configure its stock tools (`gh`/`kubectl`/
-//! `aws`/SDKs) to reach upstreams through halter. It fetches a provision doc from the
-//! reserved `/.halter/provision` path on the proxy listener (`--halter-url`) — the only
+//! `aws`/SDKs) to reach upstreams through hackamore. It fetches a provision doc from the
+//! reserved `/.hackamore/provision` path on the proxy listener (`--hackamore-url`) — the only
 //! address a sandbox can reach — and renders native config from it.
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "halter-agent", about = "Configure stock tools to reach halter")]
+#[command(
+    name = "hackamore-agent",
+    about = "Configure stock tools to reach hackamore"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -19,23 +22,23 @@ struct Cli {
 enum Command {
     /// Fetch and pretty-print the raw provision doc.
     Show(Common),
-    /// Print shell `export` lines (for `eval "$(halter-agent env ...)"`).
+    /// Print shell `export` lines (for `eval "$(hackamore-agent env ...)"`).
     Env(Common),
     /// Print a human-readable summary of what the token can reach.
     Status(Common),
     /// Write native tool config (kubeconfig / ~/.aws / git) into a home directory.
     Setup(SetupArgs),
-    /// Remove the native tool config halter previously wrote (per its manifest).
+    /// Remove the native tool config hackamore previously wrote (per its manifest).
     Teardown(TeardownArgs),
 }
 
 #[derive(clap::Args)]
 struct Common {
-    /// Base URL of the halter proxy listener, e.g. http://127.0.0.1:9090 (provision is
-    /// fetched from the reserved /.halter/provision path).
+    /// Base URL of the hackamore proxy listener, e.g. http://127.0.0.1:9090 (provision is
+    /// fetched from the reserved /.hackamore/provision path).
     #[arg(long)]
-    halter_url: String,
-    /// The halter token to provision for.
+    hackamore_url: String,
+    /// The hackamore token to provision for.
     #[arg(long)]
     token: String,
 }
@@ -51,7 +54,7 @@ struct SetupArgs {
 
 #[derive(clap::Args)]
 struct TeardownArgs {
-    /// Home directory to remove halter-written config from (defaults to $HOME).
+    /// Home directory to remove hackamore-written config from (defaults to $HOME).
     #[arg(long)]
     home: Option<std::path::PathBuf>,
 }
@@ -69,29 +72,30 @@ fn resolve_home(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().command {
         Command::Show(c) => {
-            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
+            let doc = hackamore_agent::fetch_provision(&c.hackamore_url, &c.token).await?;
             println!("{}", serde_json::to_string_pretty(&doc)?);
         }
         Command::Env(c) => {
-            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
-            print!("{}", halter_agent::render_env(&doc));
+            let doc = hackamore_agent::fetch_provision(&c.hackamore_url, &c.token).await?;
+            print!("{}", hackamore_agent::render_env(&doc));
         }
         Command::Status(c) => {
-            let doc = halter_agent::fetch_provision(&c.halter_url, &c.token).await?;
-            print!("{}", halter_agent::render_status(&doc));
+            let doc = hackamore_agent::fetch_provision(&c.hackamore_url, &c.token).await?;
+            print!("{}", hackamore_agent::render_status(&doc));
         }
         Command::Setup(args) => {
             let doc =
-                halter_agent::fetch_provision(&args.common.halter_url, &args.common.token).await?;
+                hackamore_agent::fetch_provision(&args.common.hackamore_url, &args.common.token)
+                    .await?;
             let home = resolve_home(args.home)?;
-            let written = halter_agent::write_configs(&home, &doc)?;
+            let written = hackamore_agent::write_configs(&home, &doc)?;
             for p in &written {
                 println!("wrote {}", p.display());
             }
         }
         Command::Teardown(args) => {
             let home = resolve_home(args.home)?;
-            let removed = halter_agent::teardown(&home)?;
+            let removed = hackamore_agent::teardown(&home)?;
             for p in &removed {
                 println!("removed {}", p.display());
             }

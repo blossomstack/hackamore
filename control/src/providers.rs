@@ -282,7 +282,7 @@ impl CredentialProvider for GitHubAppProvider {
                 .post(&url)
                 .bearer_auth(&jwt)
                 .header(reqwest::header::ACCEPT, "application/vnd.github+json")
-                .header(reqwest::header::USER_AGENT, "halter")
+                .header(reqwest::header::USER_AGENT, "hackamore")
                 .send()
                 .await
                 .map_err(|e| format!("installation-token request failed: {e}"))?;

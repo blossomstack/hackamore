@@ -1,4 +1,4 @@
-/// Audit records: every decision halter makes is journaled, allow or deny.
+/// Audit records: every decision hackamore makes is journaled, allow or deny.
 package audit;
 
 use action.Action;
@@ -9,7 +9,7 @@ enum Decision {
     Deny,
 }
 
-/// One immutable audit record: what was attempted, and what halter decided.
+/// One immutable audit record: what was attempted, and what hackamore decided.
 struct AuditEvent {
     /// Unix epoch milliseconds when the decision was made.
     at_ms: u64,

@@ -1,8 +1,8 @@
-# halter Redesign — Phase 1: Model Spine Implementation Plan
+# hackamore Redesign — Phase 1: Model Spine Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Transform the halter model from agent-bound, GitHub-centric, credential-in-policy
+**Goal:** Transform the hackamore model from agent-bound, GitHub-centric, credential-in-policy
 to the redesign's spine: **policy-bound tokens (no agent identity)**, an **open `verb` tagged
 union** (Option A), and **credentials bound to the target with a hybrid passthrough/inject**
 outbound stance.
@@ -10,7 +10,7 @@ outbound stance.
 **Architecture:** The pure engine (`policy::decide`) and the `Action`/`Verdict` contract stay
 the portability boundary; we change the contract types (fluorite schemas) and the control/data
 planes that fill and consume them. No new external dependencies in Phase 1 — SigV4, catalogs,
-k8s discovery, the `halter-agent` CLI, and transparent MITM are later phases (see *Deferred
+k8s discovery, the `hackamore-agent` CLI, and transparent MITM are later phases (see *Deferred
 subsystems*).
 
 **Tech Stack:** Rust workspace (`models` via fluorite codegen, `policy`, `control`, `gateway`,
@@ -28,7 +28,7 @@ contract* (Option-A verb), and *Mint and token (no agent)*.
 
 **Deferred subsystems** (each needs its own spec+plan; flagged in the design's *Out of scope*):
 SigV4 verify/re-sign + credential providers (EKS/GitHub-App minting); catalog ingestion
-(botocore/OpenAPI/k8s discovery) + mint-time validation; the `halter-agent` CLI + `/provision`
+(botocore/OpenAPI/k8s discovery) + mint-time validation; the `hackamore-agent` CLI + `/provision`
 endpoint + `ProvisionDoc`; RPC protocol parsers (aws-query/aws-json); transport (Upgrade,
 streaming uploads) and transparent-MITM mode.
 
@@ -399,7 +399,7 @@ struct MintRequest {
     ttl_seconds: u64,
 }
 
-/// A minted token, honored only by halter.
+/// A minted token, honored only by hackamore.
 struct MintResponse {
     token: String,
     expires_at_ms: u64,
@@ -509,8 +509,8 @@ fn passthrough_service_forwards_consumers_own_credential() {
     let (control, _a, _) = test_control();
     let gw = Gateway::with_clock(control.clone(), router_passthrough(), fixed_clock(1_000));
     let minted = gw.mint(allow_all(), 60);
-    // The consumer presents the halter token; passthrough leaves whatever auth it sent —
-    // here halter strips the halter token and injects nothing, so no Authorization upstream.
+    // The consumer presents the hackamore token; passthrough leaves whatever auth it sent —
+    // here hackamore strips the hackamore token and injects nothing, so no Authorization upstream.
     match gw.handle(get(bearer(&minted.token), "/x")) {
         Outcome::Forward(plan) => assert!(plan.headers.get(http::header::AUTHORIZATION).is_none()),
         Outcome::Reject(_) => panic!("expected forward"),
@@ -553,7 +553,7 @@ Expected: FAIL to compile — `Outbound`, `gw.mint(policy)` not present.
 - [ ] **Step 3: Add `Outbound` to `Service`.** In `gateway/src/service.rs`, add:
 
 ```rust
-/// What halter does with upstream auth on allow.
+/// What hackamore does with upstream auth on allow.
 #[derive(Clone, Debug)]
 pub enum Outbound {
     /// Forward the consumer's own credential unchanged (filter-only).
@@ -600,7 +600,7 @@ pub fn mint(&self, policy: models::policy::Policy, ttl_seconds: u64) -> models::
 ```rust
 let Some(policy) = self.control.tokens.resolve(&token, now) else {
     return reject(http::StatusCode::UNAUTHORIZED, DenyReason::Unauthenticated,
-        "unknown or expired halter token");
+        "unknown or expired hackamore token");
 };
 let host = extract_host(&req.headers).unwrap_or_default();
 let Some(service) = self.router.route(&host).cloned() else {

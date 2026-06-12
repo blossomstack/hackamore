@@ -15,11 +15,11 @@ enum DenyReason {
     NotAllowed,
     /// An explicit `Deny` rule matched.
     ExplicitDeny,
-    /// The halter token was missing, unknown, or expired.
+    /// The hackamore token was missing, unknown, or expired.
     Unauthenticated,
     /// The agent is authenticated but has no policy registered.
     NoPolicy,
-    /// The request targets a host/path halter does not proxy.
+    /// The request targets a host/path hackamore does not proxy.
     UnknownTarget,
 }
 

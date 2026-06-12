@@ -7,7 +7,7 @@
 
 use crate::core::ProxyRequest;
 use crate::service::{Flavor, Protocol, Service};
-use models::action::{Action, CrudKind, Resource, Verb};
+use hackamore_models::action::{Action, CrudKind, Resource, Verb};
 use serde_json::{Map, Value};
 
 /// A fail-closed sentinel verb for RPC requests whose operation cannot be extracted. No

@@ -1,8 +1,8 @@
-//! The audit sink. Every decision halter makes — allow or deny — is recorded. The
+//! The audit sink. Every decision hackamore makes — allow or deny — is recorded. The
 //! trait lets the data plane stay oblivious to where records go; v1 ships an in-memory
 //! sink (used by tests and introspection) and a `tracing` sink for operations.
 
-use models::audit::AuditEvent;
+use hackamore_models::audit::AuditEvent;
 use parking_lot::{Mutex, RwLock};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -48,7 +48,7 @@ impl AuditSink for TracingAudit {
             resource = %event.action.resource.path,
             verb = ?event.action.verb,
             detail = %event.detail,
-            "halter decision"
+            "hackamore decision"
         );
     }
 }
@@ -112,8 +112,8 @@ impl AuditSink for FileAudit {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use models::action::{Action, CrudKind, Resource, Verb};
-    use models::audit::Decision;
+    use hackamore_models::action::{Action, CrudKind, Resource, Verb};
+    use hackamore_models::audit::Decision;
 
     fn event(at: u64, decision: Decision, detail: &str) -> AuditEvent {
         AuditEvent {
@@ -130,7 +130,8 @@ mod tests {
 
     #[test]
     fn file_audit_appends_jsonl_and_reads_back() {
-        let path = std::env::temp_dir().join(format!("halter-audit-{}.jsonl", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("hackamore-audit-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
             let sink = FileAudit::open(&path).unwrap();

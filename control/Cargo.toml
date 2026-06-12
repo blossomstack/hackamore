@@ -1,12 +1,12 @@
 [package]
-name = "control"
+name = "hackamore-control"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [dependencies]
-models      = { workspace = true }
+hackamore-models = { workspace = true }
 parking_lot = { workspace = true }
 uuid        = { workspace = true }
 tracing     = { workspace = true }

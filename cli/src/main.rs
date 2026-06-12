@@ -1,24 +1,24 @@
-//! `halter` — the CLI entry point.
+//! `hackamore` — the CLI entry point.
 //!
-//! `halter serve --config <file>` starts the reverse proxy + admin API from a config
-//! file. `halter mint --admin-url <url> --policy <file> --ttl <secs>` calls a running
+//! `hackamore serve --config <file>` starts the reverse proxy + admin API from a config
+//! file. `hackamore mint --admin-url <url> --policy <file> --ttl <secs>` calls a running
 //! server's admin API to issue a launch token bound to that policy (handy for manual
 //! testing; in production the orchestrator calls the admin API directly).
 
 use clap::{Parser, Subcommand};
-use cli::config::{Config, OutboundConfig};
-use control::{ControlPlane, InMemoryCredentials, Secret, TracingAudit};
-use gateway::{
+use hackamore_cli::config::{Config, OutboundConfig};
+use hackamore_control::{ControlPlane, InMemoryCredentials, Secret, TracingAudit};
+use hackamore_gateway::{
     Catalog, Extract, Flavor, Gateway, Outbound, Protocol, Service, ServiceRouter, TlsMaterial,
 };
-use models::control::{MintRequest, MintResponse};
-use models::policy::Policy;
+use hackamore_models::control::{MintRequest, MintResponse};
+use hackamore_models::policy::Policy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
-    name = "halter",
+    name = "hackamore",
     about = "JIT, policy-scoped access for untrusted agents"
 )]
 struct Cli {
@@ -135,7 +135,7 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Optional TLS termination: load the PEM material, derive the rustls config, and surface
-    // the CA in the provision doc so consumers can trust halter's cert.
+    // the CA in the provision doc so consumers can trust hackamore's cert.
     let (tls_config, ca_pem) = match &cfg.tls {
         Some(t) => {
             let cert_pem = std::fs::read_to_string(&t.cert)
@@ -165,16 +165,18 @@ async fn serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let proxy_addr = cfg.proxy_addr.parse()?;
     let admin_addr = cfg.admin_addr.parse()?;
-    gateway::serve(proxy_addr, admin_addr, gateway, tls_config).await?;
+    hackamore_gateway::serve(proxy_addr, admin_addr, gateway, tls_config).await?;
     Ok(())
 }
 
 /// Select the audit sink: a durable JSONL [`FileAudit`] when `audit_log` is configured,
 /// otherwise the `tracing`-only sink.
-fn build_audit(cfg: &Config) -> Result<Arc<dyn control::AuditSink>, Box<dyn std::error::Error>> {
+fn build_audit(
+    cfg: &Config,
+) -> Result<Arc<dyn hackamore_control::AuditSink>, Box<dyn std::error::Error>> {
     match &cfg.audit_log {
         Some(path) => {
-            let sink = control::FileAudit::open(path)
+            let sink = hackamore_control::FileAudit::open(path)
                 .map_err(|e| format!("open audit log {}: {e}", path.display()))?;
             tracing::info!(path = %path.display(), "durable audit log enabled");
             Ok(Arc::new(sink))
@@ -188,8 +190,8 @@ fn build_audit(cfg: &Config) -> Result<Arc<dyn control::AuditSink>, Box<dyn std:
 /// secrets, primed once, and kept fresh by a background refresher.
 async fn build_credentials(
     cfg: &Config,
-) -> Result<Arc<dyn control::CredentialStore>, Box<dyn std::error::Error>> {
-    use cli::config::ProviderConfig;
+) -> Result<Arc<dyn hackamore_control::CredentialStore>, Box<dyn std::error::Error>> {
+    use hackamore_cli::config::ProviderConfig;
 
     if cfg.providers.is_empty() {
         let vault = InMemoryCredentials::new();
@@ -203,15 +205,16 @@ async fn build_credentials(
     for (id, secret) in &cfg.credentials {
         statics.insert(id.clone(), Secret::new(secret.clone()));
     }
-    let mut providers: HashMap<String, Arc<dyn control::CredentialProvider>> = HashMap::new();
+    let mut providers: HashMap<String, Arc<dyn hackamore_control::CredentialProvider>> =
+        HashMap::new();
     for (id, p) in &cfg.providers {
-        let provider: Arc<dyn control::CredentialProvider> = match p {
+        let provider: Arc<dyn hackamore_control::CredentialProvider> = match p {
             ProviderConfig::Eks {
                 access_key_id,
                 secret_access_key,
                 region,
                 cluster_name,
-            } => Arc::new(control::EksGetTokenProvider {
+            } => Arc::new(hackamore_control::EksGetTokenProvider {
                 access_key_id: access_key_id.clone(),
                 secret_access_key: Secret::new(secret_access_key.clone()),
                 region: region.clone(),
@@ -225,10 +228,10 @@ async fn build_credentials(
             } => {
                 let pem = std::fs::read_to_string(private_key_path)
                     .map_err(|e| format!("read app key {}: {e}", private_key_path.display()))?;
-                Arc::new(control::GitHubAppProvider {
+                Arc::new(hackamore_control::GitHubAppProvider {
                     app_id: app_id.clone(),
                     installation_id: installation_id.clone(),
-                    private_key_pkcs8_der: control::pkcs8_from_pem(&pem)?,
+                    private_key_pkcs8_der: hackamore_control::pkcs8_from_pem(&pem)?,
                     api_base: api_base
                         .clone()
                         .unwrap_or_else(|| "https://api.github.com".to_string()),
@@ -239,14 +242,16 @@ async fn build_credentials(
         providers.insert(id.clone(), provider);
     }
 
-    let caching = Arc::new(control::CachingCredentials::new(statics, providers));
+    let caching = Arc::new(hackamore_control::CachingCredentials::new(
+        statics, providers,
+    ));
     // Prime so the first request can resolve a minted secret; then rotate in the background
     // ahead of expiry.
-    let primed = caching.refresh_due(control::now_ms()).await;
+    let primed = caching.refresh_due(hackamore_control::now_ms()).await;
     tracing::info!(primed = primed.len(), "minted initial provider credentials");
-    control::spawn_refresher(
+    hackamore_control::spawn_refresher(
         caching.clone(),
-        Arc::new(control::now_ms),
+        Arc::new(hackamore_control::now_ms),
         std::time::Duration::from_secs(60),
     );
     Ok(caching)

@@ -1,4 +1,4 @@
-# halter developer tasks
+# hackamore developer tasks
 
 .PHONY: build test check fmt clippy run help
 
@@ -20,7 +20,7 @@ check: ## Pre-PR gate: fmt check + clippy + tests
 	cargo test --workspace
 
 run: ## Run the proxy from the example config
-	cargo run -p cli --bin halter -- serve --config examples/config.json
+	cargo run -p cli --bin hackamore -- serve --config examples/config.json
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'

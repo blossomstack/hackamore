@@ -1,14 +1,14 @@
-//! Test harness for halter's full-stack e2e tests: a mock GitHub upstream that records
-//! what it receives, and a live halter server (reverse proxy + admin API) wired to it.
+//! Test harness for hackamore's full-stack e2e tests: a mock GitHub upstream that records
+//! what it receives, and a live hackamore server (reverse proxy + admin API) wired to it.
 //!
 //! Not a production crate — helpers `unwrap` freely and this crate intentionally does
 //! not enable the workspace restriction lints.
 
 use axum::Router;
 use axum::extract::State;
-use control::{ControlPlane, InMemoryAudit, InMemoryCredentials, Secret};
-use gateway::{Flavor, Gateway, Outbound, ServerState, Service, ServiceRouter};
-use models::policy::Policy;
+use hackamore_control::{ControlPlane, InMemoryAudit, InMemoryCredentials, Secret};
+use hackamore_gateway::{Flavor, Gateway, Outbound, ServerState, Service, ServiceRouter};
+use hackamore_models::policy::Policy;
 use std::sync::{Arc, Mutex};
 
 /// One request the mock upstream received.
@@ -59,7 +59,7 @@ async fn record_handler(
     let (mut parts, body) = request.into_parts();
 
     // Upgrade branch: echo bytes back over the upgraded connection, so tests can verify
-    // halter tunnels `Connection: Upgrade` (WebSocket/SPDY: kubectl exec/port-forward) end
+    // hackamore tunnels `Connection: Upgrade` (WebSocket/SPDY: kubectl exec/port-forward) end
     // to end. We record the request, return 101, and splice the upgraded stream to itself.
     let is_upgrade = parts
         .headers
@@ -113,7 +113,7 @@ async fn record_handler(
         body: body.to_vec(),
     });
     // SSE branch: any path containing "stream" returns a Server-Sent Events body, so
-    // tests can verify halter relays event streams (transport) end to end.
+    // tests can verify hackamore relays event streams (transport) end to end.
     if parts.uri.path().contains("stream") {
         let events = "data: one\n\ndata: two\n\ndata: three\n\n";
         return axum::response::Response::builder()
@@ -131,7 +131,7 @@ async fn record_handler(
         .unwrap()
 }
 
-/// A live halter server plus handles to seed and inspect its control plane.
+/// A live hackamore server plus handles to seed and inspect its control plane.
 pub struct Harness {
     pub control: Arc<ControlPlane>,
     pub audit: Arc<InMemoryAudit>,
@@ -166,10 +166,10 @@ impl Harness {
     }
 }
 
-/// Start a halter server with a single catch-all GitHub-flavored service pointing at
+/// Start a hackamore server with a single catch-all GitHub-flavored service pointing at
 /// `upstream_base` (the common case for most tests).
-pub async fn start_halter(upstream_base: &str) -> Harness {
-    start_halter_services(vec![
+pub async fn start_hackamore(upstream_base: &str) -> Harness {
+    start_hackamore_services(vec![
         Service::new("github", "*", upstream_base)
             .with_flavor(Flavor::Github)
             .with_outbound(Outbound::Bearer {
@@ -179,12 +179,12 @@ pub async fn start_halter(upstream_base: &str) -> Harness {
     .await
 }
 
-/// Start a halter server whose agent-facing proxy terminates TLS with `tls`, on ephemeral
-/// ports. The provision doc carries `tls.ca_pem` as `halter_ca`; the admin API stays
+/// Start a hackamore server whose agent-facing proxy terminates TLS with `tls`, on ephemeral
+/// ports. The provision doc carries `tls.ca_pem` as `hackamore_ca`; the admin API stays
 /// plaintext. The returned `proxy_url` is `https://…`.
-pub async fn start_halter_tls_services(
+pub async fn start_hackamore_tls_services(
     services: Vec<Service>,
-    tls: gateway::TlsMaterial,
+    tls: hackamore_gateway::TlsMaterial,
 ) -> Harness {
     let credentials = Arc::new(InMemoryCredentials::new());
     let audit = Arc::new(InMemoryAudit::new());
@@ -200,15 +200,15 @@ pub async fn start_halter_tls_services(
 
     let proxy_state = state.clone();
     tokio::spawn(async move {
-        let _ = gateway::server::serve_proxy_tls(
+        let _ = hackamore_gateway::server::serve_proxy_tls(
             proxy_listener,
-            gateway::proxy_router(proxy_state),
+            hackamore_gateway::proxy_router(proxy_state),
             config,
         )
         .await;
     });
     tokio::spawn(async move {
-        let _ = axum::serve(admin_listener, gateway::admin_router(state)).await;
+        let _ = axum::serve(admin_listener, hackamore_gateway::admin_router(state)).await;
     });
 
     Harness {
@@ -220,8 +220,8 @@ pub async fn start_halter_tls_services(
     }
 }
 
-/// Start a halter server with an explicit service allowlist, on ephemeral ports.
-pub async fn start_halter_services(services: Vec<Service>) -> Harness {
+/// Start a hackamore server with an explicit service allowlist, on ephemeral ports.
+pub async fn start_hackamore_services(services: Vec<Service>) -> Harness {
     let credentials = Arc::new(InMemoryCredentials::new());
     let audit = Arc::new(InMemoryAudit::new());
     let control = Arc::new(ControlPlane::new(credentials.clone(), audit.clone()));
@@ -235,10 +235,10 @@ pub async fn start_halter_services(services: Vec<Service>) -> Harness {
 
     let proxy_state = state.clone();
     tokio::spawn(async move {
-        let _ = axum::serve(proxy_listener, gateway::proxy_router(proxy_state)).await;
+        let _ = axum::serve(proxy_listener, hackamore_gateway::proxy_router(proxy_state)).await;
     });
     tokio::spawn(async move {
-        let _ = axum::serve(admin_listener, gateway::admin_router(state)).await;
+        let _ = axum::serve(admin_listener, hackamore_gateway::admin_router(state)).await;
     });
 
     Harness {

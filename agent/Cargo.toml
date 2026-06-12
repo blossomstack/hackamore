@@ -1,20 +1,20 @@
 [package]
-name = "halter-agent"
+name = "hackamore-agent"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 publish = false
 
 [lib]
-name = "halter_agent"
+name = "hackamore_agent"
 path = "src/lib.rs"
 
 [[bin]]
-name = "halter-agent"
+name = "hackamore-agent"
 path = "src/main.rs"
 
 [dependencies]
-models     = { workspace = true }
+hackamore-models = { workspace = true }
 reqwest    = { workspace = true }
 clap       = { workspace = true }
 tokio      = { workspace = true }

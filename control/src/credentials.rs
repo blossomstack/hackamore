@@ -39,7 +39,7 @@ pub trait CredentialStore: Send + Sync {
 
 /// A static, in-memory credential store seeded at startup. Adequate for v1, where the
 /// real upstream credential (e.g. a GitHub App installation token) is provisioned out
-/// of band and handed to halter.
+/// of band and handed to hackamore.
 #[derive(Default)]
 pub struct InMemoryCredentials {
     secrets: RwLock<HashMap<String, Secret>>,

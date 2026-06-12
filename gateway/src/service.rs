@@ -1,10 +1,10 @@
-//! Service routing. halter forwards to any number of configured upstream HTTPS services,
+//! Service routing. hackamore forwards to any number of configured upstream HTTPS services,
 //! chosen by the request's `Host` header. The configured set is an allowlist: a request
 //! whose host matches no service is denied (fail closed). Each service names how its
 //! requests are normalized into an `Action` (its [`Flavor`]).
 
 /// How a service's requests are normalized into an `Action`. Also a tool hint the
-/// provision doc surfaces so `halter-agent` writes the right native config.
+/// provision doc surfaces so `hackamore-agent` writes the right native config.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Flavor {
     /// GitHub-aware resource parsing (repo/pull_request/issue kinds).
@@ -131,7 +131,7 @@ impl Flavor {
     }
 }
 
-/// What halter does with upstream auth when a request is allowed — a closed mechanism
+/// What hackamore does with upstream auth when a request is allowed — a closed mechanism
 /// library, selected per service instance. This is the **hybrid** stance: filter-only by
 /// default (`Passthrough`), credential-hiding via one of the inject mechanisms. The
 /// credential is a property of the service instance, never named in policy. (SigV4 — a
@@ -185,10 +185,10 @@ pub struct Service {
     pub upstream_base: String,
     /// How requests to this service are normalized.
     pub flavor: Flavor,
-    /// What halter does with upstream auth on allow.
+    /// What hackamore does with upstream auth on allow.
     pub outbound: Outbound,
     /// Consumer-facing address the agent points its tool at to reach this service
-    /// through halter (the provision doc surfaces this). Empty if not configured.
+    /// through hackamore (the provision doc surfaces this). Empty if not configured.
     pub address: String,
     /// How requests are normalized into an `Action` (protocol + field extraction).
     pub extract: Extract,

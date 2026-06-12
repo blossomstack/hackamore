@@ -12,7 +12,7 @@ struct MintRequest {
     ttl_seconds: u64,
 }
 
-/// A minted token. Honored only by the halter proxy and useless against the real
+/// A minted token. Honored only by the hackamore proxy and useless against the real
 /// upstream. The consumer presents it; the proxy enforces the bound policy.
 struct MintResponse {
     token: String,

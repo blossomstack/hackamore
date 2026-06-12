@@ -1,4 +1,4 @@
-# halter — JIT, policy-scoped access for untrusted agents (v1 design)
+# hackamore — JIT, policy-scoped access for untrusted agents (v1 design)
 
 **Status:** v1 implemented. **Date:** 2026-06-04.
 
@@ -18,9 +18,9 @@ a real credential**.
    sandbox guaranteeing the proxy is the only egress (so the agent cannot bypass it).
    Chosen over (a) credential vending — can't enforce finer-than-native control, can't
    revoke mid-task — and (b) a CLI shim — bypassable via raw API calls.
-3. **Token model.** halter mints a short-lived **capability token** bound to the agent's
+3. **Token model.** hackamore mints a short-lived **capability token** bound to the agent's
    policy. It is injected into the sandbox so CLIs (`gh`/`git`) use it transparently, but
-   it is honored **only by halter** — never the real upstream. halter swaps it for the
+   it is honored **only by hackamore** — never the real upstream. hackamore swaps it for the
    real credential when forwarding.
 4. **Policy model: Option 3 — standing policy attached to the agent identity.** Policy is
    a property of the agent, reused every launch; the token is derived from it at launch.
@@ -30,7 +30,7 @@ a real credential**.
 6. **Data plane: a reverse proxy, not Envoy or TLS-MITM.** The sandbox
    (nono = Landlock/Seatbelt, plus a netns/nftables redirect on Linux) does
    *confinement*; that is a different job from *policy*. Because confinement is handled
-   below, halter can be a plain reverse proxy and avoid TLS interception and CA
+   below, hackamore can be a plain reverse proxy and avoid TLS interception and CA
    distribution. Envoy + `ext_authz` was considered and rejected for v1: heavyweight, and
    its only real win (out-of-process authz) is the very thing we get for free by keeping
    the engine a library.
@@ -59,14 +59,14 @@ Three planes:
   agent token; it audits every decision.
 
 `models` holds the fluorite-generated contract types (`Action`, `Verdict`, `Policy`,
-audit, mint). `cli` is the `halter` binary. `tests` is full-stack e2e.
+audit, mint). `cli` is the `hackamore` binary. `tests` is full-stack e2e.
 
 ### Request lifecycle
 
-1. **Launch:** orchestrator calls admin `/mint` → halter mints a token bound to the
-   agent's standing policy; the sandbox injects it and locks egress to halter.
-2. Agent calls GitHub via the proxy with `Authorization: Bearer <halter token>`.
-3. halter resolves token → agent → policy, normalizes the request to an `Action`,
+1. **Launch:** orchestrator calls admin `/mint` → hackamore mints a token bound to the
+   agent's standing policy; the sandbox injects it and locks egress to hackamore.
+2. Agent calls GitHub via the proxy with `Authorization: Bearer <hackamore token>`.
+3. hackamore resolves token → agent → policy, normalizes the request to an `Action`,
    `policy::decide`s, and on allow injects the real credential and forwards; on deny
    returns 403. Either way it records an `AuditEvent`.
 
@@ -95,9 +95,9 @@ unchanged.
 Generalized beyond the GitHub-only v1, without changing the core model:
 
 - **Any HTTPS service.** `Action.target` is now a generic **service name** (the `Github`
-  enum is gone). halter holds a **configured service allowlist**, each entry
+  enum is gone). hackamore holds a **configured service allowlist**, each entry
   `{ name, host, upstream_base, flavor }`, and routes a request to a service by its
-  `Host` header. An unmatched host is **denied (fail closed)** — halter only forwards to
+  `Host` header. An unmatched host is **denied (fail closed)** — hackamore only forwards to
   its allowlist. Policy rules scope by service via `targets`.
 - **Flavors.** Normalization is **generic** by default (path-based; works for any
   HTTP/JSON/SSE API); a service may opt into a richer flavor (`github`) for nicer

@@ -1,4 +1,4 @@
-//! halter server configuration. This is application/storage config — hand-written and
+//! hackamore server configuration. This is application/storage config — hand-written and
 //! deliberately *not* a fluorite type — so it can evolve independently of the wire
 //! protocol. It seeds the gateway's service allowlist (with each service's outbound auth
 //! stance) and the credential vault at startup. There are no agents: tokens are minted
@@ -14,7 +14,7 @@ pub struct Config {
     pub proxy_addr: String,
     /// Address the operator/orchestrator admin API listens on, e.g. `127.0.0.1:9091`.
     pub admin_addr: String,
-    /// The upstream HTTPS services halter will proxy to (the allowlist). Routed by Host.
+    /// The upstream HTTPS services hackamore will proxy to (the allowlist). Routed by Host.
     pub services: Vec<ServiceConfig>,
     /// Logical credential id → real secret. Provisioned out of band; never exposed to
     /// consumers.
@@ -30,7 +30,7 @@ pub struct Config {
     #[serde(default)]
     pub tenants: HashMap<String, Vec<String>>,
     /// Optional TLS termination for the agent-facing proxy listener. Absent = plaintext
-    /// (the sandbox-confined model); present = consumers terminate TLS at halter and trust
+    /// (the sandbox-confined model); present = consumers terminate TLS at hackamore and trust
     /// its certificate.
     #[serde(default)]
     pub tls: Option<TlsConfig>,
@@ -66,7 +66,7 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub flavor: Option<String>,
     /// Consumer-facing address the agent points its tool at to reach this service through
-    /// halter (surfaced in the provision doc). Optional.
+    /// hackamore (surfaced in the provision doc). Optional.
     #[serde(default)]
     pub consumer_address: Option<String>,
     /// Wire protocol for extraction: "rest" (default), "aws-query", or "aws-json".
@@ -83,7 +83,7 @@ pub struct ServiceConfig {
     /// catalog (operationId, or `"<METHOD> <path>"`). Takes precedence over `catalog`.
     #[serde(default)]
     pub catalog_openapi: Option<std::path::PathBuf>,
-    /// What halter does with upstream auth on allow: `"passthrough"` (default) forwards
+    /// What hackamore does with upstream auth on allow: `"passthrough"` (default) forwards
     /// the consumer's own credential; `{ "bearer": "<cred-id>" }` injects it as a Bearer
     /// token; `{ "header": { "name": "X-API-Key", "credential": "<cred-id>" } }` injects
     /// it as a custom header.

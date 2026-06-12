@@ -40,7 +40,7 @@ struct Resource {
 /// One normalized operation, the sole input to the policy engine.
 struct Action {
     /// The configured service instance this targets (e.g. "github", "eks-prod") — the
-    /// routing key halter matched, and what policy rules scope to.
+    /// routing key hackamore matched, and what policy rules scope to.
     target: String,
     verb: Verb,
     resource: Resource,
