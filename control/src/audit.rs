@@ -112,17 +112,13 @@ impl AuditSink for FileAudit {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use hackamore_models::action::{Action, CrudKind, Resource, Verb};
+    use hackamore_models::action::{Action, Resource, Verb};
     use hackamore_models::audit::Decision;
 
     fn event(at: u64, decision: Decision, detail: &str) -> AuditEvent {
         AuditEvent {
             at_ms: at,
-            action: Action::of(
-                "github",
-                Verb::crud(CrudKind::Read),
-                Resource::of("repos/o/r", "repo"),
-            ),
+            action: Action::of("github", Verb::method("GET"), Resource::of("repos/o/r")),
             decision,
             detail: detail.to_string(),
         }
@@ -157,11 +153,7 @@ mod tests {
         for (i, decision) in [Decision::Allow, Decision::Deny].into_iter().enumerate() {
             sink.record(AuditEvent {
                 at_ms: i as u64,
-                action: Action::of(
-                    "github",
-                    Verb::crud(CrudKind::Read),
-                    Resource::of("repos/o/r", "repo"),
-                ),
+                action: Action::of("github", Verb::method("GET"), Resource::of("repos/o/r")),
                 decision,
                 detail: String::new(),
             });

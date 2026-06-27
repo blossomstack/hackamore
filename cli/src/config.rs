@@ -39,6 +39,16 @@ pub struct Config {
     /// as one JSON line to this file.
     #[serde(default)]
     pub audit_log: Option<std::path::PathBuf>,
+    /// Whether the admin listener serves the policy-studio web UI and its authoring
+    /// endpoints (`/ui`, `/policy/lint`, `/policy/test`). Defaults to on —
+    /// the admin listener is localhost-only operator surface. Set `false` to disable.
+    #[serde(default = "default_true")]
+    pub web_ui: bool,
+}
+
+/// Serde default for `web_ui` (on).
+fn default_true() -> bool {
+    true
 }
 
 /// Paths to the PEM material for TLS termination. Storage/config type.
@@ -62,19 +72,26 @@ pub struct ServiceConfig {
     pub host: String,
     /// Upstream base URL, e.g. `https://api.github.com`.
     pub upstream_base: String,
-    /// Normalization flavor: "github" or "generic" (default).
-    #[serde(default)]
-    pub flavor: Option<String>,
     /// Consumer-facing address the agent points its tool at to reach this service through
     /// hackamore (surfaced in the provision doc). Optional.
     #[serde(default)]
     pub consumer_address: Option<String>,
+    /// The agent tool-config hint surfaced in the provision doc (`github` | `git` | `aws` |
+    /// `kubernetes` | `generic`) — which native tool config the agent writes for this
+    /// service. Optional; absent defaults to `generic` (no native tool files).
+    #[serde(default)]
+    pub tool_hint: Option<String>,
     /// Wire protocol for extraction: "rest" (default), "aws-query", or "aws-json".
     #[serde(default)]
     pub protocol: Option<String>,
     /// Optional path template capturing named segments into fields, e.g. `/{bucket}/{key+}`.
     #[serde(default)]
     pub path_template: Option<String>,
+    /// Optional API description (an OpenAPI or Smithy doc) imported at startup into the
+    /// service's vocabulary (`ApiModel`). The imported model also drives the wire protocol,
+    /// so a described service needs no separate `protocol`.
+    #[serde(default)]
+    pub description: Option<DescriptionConfig>,
     /// Optional action catalog: known named-action ids (e.g. "ec2:DescribeInstances") used
     /// to validate policies at mint time. Empty = unvalidated (raw).
     #[serde(default)]
@@ -89,6 +106,20 @@ pub struct ServiceConfig {
     /// it as a custom header.
     #[serde(default)]
     pub outbound: OutboundConfig,
+}
+
+/// An API description to import into a service's vocabulary at startup. Exactly one of
+/// `file`/`url` is required; `idl` selects the importer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DescriptionConfig {
+    /// "openapi" | "smithy".
+    pub idl: String,
+    /// Path to the description document.
+    #[serde(default)]
+    pub file: Option<std::path::PathBuf>,
+    /// URL to fetch the description from.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// A minting credential provider. Tagged by `kind`: `"eks"` presigns an STS get-token,
@@ -126,11 +157,11 @@ pub enum OutboundConfig {
     Bearer(String),
     /// Inject the named vault credential as a custom header.
     Header { name: String, credential: String },
-    /// Re-sign the request with AWS SigV4 using the real account credential (the vault
-    /// `credential` is the secret access key).
+    /// Re-sign the request with AWS SigV4 using the real account credential. The vault
+    /// `credential` is an AWS *bundle* (akid + secret + optional session token), so the access
+    /// key id comes from the bundle, not from config.
     Sigv4 {
         credential: String,
-        access_key_id: String,
         region: String,
         service: String,
     },
@@ -157,9 +188,9 @@ mod tests {
             "admin_addr": "127.0.0.1:9091",
             "services": [
                 { "name": "github", "host": "api.github.com", "upstream_base": "https://api.github.com",
-                  "flavor": "github", "outbound": { "bearer": "github-app" } },
+                  "outbound": { "bearer": "github-app" } },
                 { "name": "openai", "host": "api.openai.com", "upstream_base": "https://api.openai.com",
-                  "flavor": "generic", "outbound": "passthrough" },
+                  "outbound": "passthrough" },
                 { "name": "keyed", "host": "api.keyed.com", "upstream_base": "https://api.keyed.com",
                   "outbound": { "header": { "name": "X-API-Key", "credential": "keyed-key" } } }
             ],

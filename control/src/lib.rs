@@ -13,10 +13,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use audit::{AuditSink, FileAudit, InMemoryAudit, TracingAudit};
-pub use credentials::{CredentialStore, InMemoryCredentials, Secret};
+pub use credentials::{
+    AwsCredential, CredentialMaterial, CredentialStore, InMemoryCredentials, Secret,
+};
 pub use providers::{
-    CachingCredentials, CredentialProvider, EksGetTokenProvider, GitHubAppProvider, MintedSecret,
-    pkcs8_from_pem, spawn_refresher,
+    AssumeRoleProvider, AwsCredentialProvider, CachingCredentials, CredentialProvider,
+    EksGetTokenProvider, GitHubAppProvider, MintedAws, MintedSecret, pkcs8_from_pem,
+    spawn_refresher,
 };
 pub use tenants::Tenants;
 pub use tokens::{SigV4Mint, Tokens};

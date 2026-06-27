@@ -4,27 +4,21 @@
 /// This is the portability boundary that lets the engine outlive any single proxy.
 package action;
 
-/// The CRUD operation kinds RESTful services map onto from the HTTP method.
-enum CrudKind {
-    Read,
-    Create,
-    Update,
-    Delete,
-}
-
-/// A coarse CRUD verb — the RESTful method mapping.
-struct CrudVerb { kind: CrudKind }
+/// A REST verb: the literal HTTP method the request states, e.g. "GET", "PATCH",
+/// "PROPFIND". Verbatim — never a derived category.
+struct MethodVerb { method: String }
 
 /// A service-defined action id, e.g. "ec2:TerminateInstances" (RPC-style services whose
-/// operation does not fit CRUD). This is the one open vocabulary, scoped to this field.
+/// operation does not fit a method). This is the literal action name the request states.
 struct NamedVerb { id: String }
 
-/// The operation, abstracted over a protocol's concrete verbs. A closed tagged union: the
-/// `Crud` arm is the closed RESTful set; the `Action` arm carries the open, service-defined
-/// vocabulary. The engine matches by equality over both arms (exhaustive, fail-closed).
+/// The operation verb — the literal thing the request states. A closed tagged union: the
+/// `Method` arm carries the verbatim HTTP method (REST); the `Action` arm carries the
+/// literal action name (RPC). The engine matches by equality over both arms (exhaustive,
+/// fail-closed). (fluorite does not allow doc comments on variants.)
 #[type_tag = "type"]
 union Verb {
-    Crud(CrudVerb),
+    Method(MethodVerb),
     Action(NamedVerb),
 }
 
@@ -33,8 +27,6 @@ struct Resource {
     /// Canonical, slash-joined path with concrete identifiers, e.g.
     /// "repos/octocat/hello-world/pulls". Rule globs match against this.
     path: String,
-    /// Coarse resource class, e.g. "repo", "pull_request", "issue", "contents".
-    kind: String,
 }
 
 /// One normalized operation, the sole input to the policy engine.

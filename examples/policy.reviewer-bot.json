@@ -4,7 +4,7 @@
       "effect": "Allow",
       "matches": {
         "targets": [],
-        "verbs": [ { "type": "Crud", "value": { "kind": "Read" } } ],
+        "verbs": [ { "type": "Method", "value": { "method": "GET" } } ],
         "resources": ["repos/octocat/*/**"],
         "conditions": []
       }
@@ -13,7 +13,7 @@
       "effect": "Allow",
       "matches": {
         "targets": [],
-        "verbs": [ { "type": "Crud", "value": { "kind": "Create" } } ],
+        "verbs": [ { "type": "Method", "value": { "method": "POST" } } ],
         "resources": ["repos/octocat/*/pulls"],
         "conditions": [
           { "type": "Equals", "value": { "field": "base", "value": "develop" } }

@@ -7,7 +7,7 @@
 use axum::Router;
 use axum::extract::State;
 use hackamore_control::{ControlPlane, InMemoryAudit, InMemoryCredentials, Secret};
-use hackamore_gateway::{Flavor, Gateway, Outbound, ServerState, Service, ServiceRouter};
+use hackamore_gateway::{Gateway, Outbound, ServerState, Service, ServiceRouter};
 use hackamore_models::policy::Policy;
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +17,31 @@ pub struct Received {
     pub method: String,
     pub path: String,
     pub authorization: Option<String>,
+    /// All request headers, lowercased name → value (first value wins). Lets tests assert on
+    /// headers beyond `authorization`, e.g. `x-amz-security-token`.
+    pub headers: std::collections::HashMap<String, String>,
     pub body: Vec<u8>,
+}
+
+impl Received {
+    /// The value of header `name` (case-insensitive), if present.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+    }
+}
+
+/// Collect a header map (lowercased names) from request parts.
+fn collect_headers(headers: &http::HeaderMap) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for (name, value) in headers {
+        if let Ok(v) = value.to_str() {
+            out.entry(name.as_str().to_ascii_lowercase())
+                .or_insert_with(|| v.to_string());
+        }
+    }
+    out
 }
 
 /// A mock GitHub API that records every request and returns a fixed JSON body.
@@ -79,6 +103,7 @@ async fn record_handler(
                 .get(http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string),
+            headers: collect_headers(&parts.headers),
             body: Vec::new(),
         });
         if let Some(on_upgrade) = parts.extensions.remove::<hyper::upgrade::OnUpgrade>() {
@@ -106,10 +131,12 @@ async fn record_handler(
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let headers = collect_headers(&parts.headers);
     requests.lock().unwrap().push(Received {
         method: parts.method.to_string(),
         path: parts.uri.path().to_string(),
         authorization,
+        headers,
         body: body.to_vec(),
     });
     // SSE branch: any path containing "stream" returns a Server-Sent Events body, so
@@ -166,15 +193,13 @@ impl Harness {
     }
 }
 
-/// Start a hackamore server with a single catch-all GitHub-flavored service pointing at
+/// Start a hackamore server with a single catch-all `github` service pointing at
 /// `upstream_base` (the common case for most tests).
 pub async fn start_hackamore(upstream_base: &str) -> Harness {
     start_hackamore_services(vec![
-        Service::new("github", "*", upstream_base)
-            .with_flavor(Flavor::Github)
-            .with_outbound(Outbound::Bearer {
-                credential: "github-app".to_string(),
-            }),
+        Service::new("github", "*", upstream_base).with_outbound(Outbound::Bearer {
+            credential: "github-app".to_string(),
+        }),
     ])
     .await
 }
@@ -222,10 +247,16 @@ pub async fn start_hackamore_tls_services(
 
 /// Start a hackamore server with an explicit service allowlist, on ephemeral ports.
 pub async fn start_hackamore_services(services: Vec<Service>) -> Harness {
+    start_hackamore_services_opts(services, true).await
+}
+
+/// As [`start_hackamore_services`], but with explicit control over whether the admin
+/// web UI / authoring endpoints are served (so tests can assert the disabled case).
+pub async fn start_hackamore_services_opts(services: Vec<Service>, web_ui: bool) -> Harness {
     let credentials = Arc::new(InMemoryCredentials::new());
     let audit = Arc::new(InMemoryAudit::new());
     let control = Arc::new(ControlPlane::new(credentials.clone(), audit.clone()));
-    let gateway = Gateway::new(control.clone(), ServiceRouter::new(services));
+    let gateway = Gateway::new(control.clone(), ServiceRouter::new(services)).with_web_ui(web_ui);
     let state = Arc::new(ServerState::new(gateway));
 
     let proxy_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

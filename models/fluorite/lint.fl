@@ -1,0 +1,21 @@
+/// Policy lint findings — the output of `hackamore_policy::lint`. Transported on the
+/// wire: the mint API returns them when a policy is rejected, the CLI prints them, and
+/// the future admin `/policy/lint` endpoint serves them to the web UI.
+package lint;
+
+/// How severe a finding is. `Error` findings reject a mint (the rule can never do what
+/// its author meant); `Warning` findings pass but deserve a look (the catalogs are
+/// curated subsets, so absence from a catalog is advice, not proof).
+enum Severity {
+    Error,
+    Warning,
+}
+
+/// One lint finding against one rule of a policy document.
+struct Finding {
+    severity: Severity,
+    /// Zero-based index into `Policy.rules` of the offending rule.
+    rule_index: u64,
+    /// Human-readable description of the problem and, where possible, the fix.
+    message: String,
+}

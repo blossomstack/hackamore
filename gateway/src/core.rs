@@ -8,8 +8,9 @@
 //! forward. Keeping this layer free of HTTP plumbing makes the whole decision path
 //! deterministically testable.
 
-use crate::service::{Catalog, Outbound, Service, ServiceRouter};
+use crate::service::{ActionCatalog, Outbound, Service, ServiceRouter};
 use crate::{canonicalize, normalize};
+use base64::Engine;
 use hackamore_control::{ControlPlane, now_ms};
 use hackamore_models::action::Action;
 use hackamore_models::audit::{AuditEvent, Decision};
@@ -51,6 +52,21 @@ pub struct Rejection {
     pub message: String,
 }
 
+/// One registered service projected for the admin API (`GET /admin/services`): its
+/// routing/auth summary plus its imported model. Serialized to the studio; credential is
+/// the vault *id*, never the secret.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredService {
+    pub name: String,
+    pub host: String,
+    pub upstream_base: String,
+    pub address: String,
+    pub auth: String,
+    pub credential: String,
+    pub model: Option<hackamore_models::apimodel::ApiModel>,
+}
+
 /// A source of wall-clock time, injectable for tests.
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
@@ -58,14 +74,21 @@ type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 /// table (any number of configured upstream HTTPS services).
 pub struct Gateway {
     control: Arc<ControlPlane>,
-    router: ServiceRouter,
+    /// The service allowlist, behind an `RwLock` so services can be registered/removed at
+    /// runtime via the admin API (live registration). Reads (routing, projections) take a
+    /// read lock; register/remove take the write lock.
+    router: std::sync::RwLock<ServiceRouter>,
     clock: Clock,
     /// Per-target action catalogs used to validate policies at mint time. A target with
     /// no entry (or an empty catalog) is unvalidated (raw).
-    catalogs: HashMap<String, Catalog>,
+    catalogs: HashMap<String, ActionCatalog>,
     /// The CA bundle a consumer must trust to validate hackamore's TLS, surfaced in the
     /// provision doc. Empty when hackamore terminates plaintext (the sandbox-confined model).
     hackamore_ca: String,
+    /// Whether the admin listener serves the web UI and its authoring endpoints
+    /// (`/ui`, `POST /policy/lint`, `POST /policy/test`). On by default — the admin
+    /// listener is operator-only — and switchable off in config.
+    web_ui: bool,
 }
 
 impl Gateway {
@@ -74,10 +97,11 @@ impl Gateway {
     pub fn new(control: Arc<ControlPlane>, router: ServiceRouter) -> Self {
         Self {
             control,
-            router,
+            router: std::sync::RwLock::new(router),
             clock: Arc::new(now_ms),
             catalogs: HashMap::new(),
             hackamore_ca: String::new(),
+            web_ui: true,
         }
     }
 
@@ -85,16 +109,29 @@ impl Gateway {
     pub fn with_clock(control: Arc<ControlPlane>, router: ServiceRouter, clock: Clock) -> Self {
         Self {
             control,
-            router,
+            router: std::sync::RwLock::new(router),
             clock,
             catalogs: HashMap::new(),
             hackamore_ca: String::new(),
+            web_ui: true,
         }
+    }
+
+    /// Enable/disable the admin web UI and its authoring endpoints. Builder.
+    #[must_use]
+    pub fn with_web_ui(mut self, enabled: bool) -> Self {
+        self.web_ui = enabled;
+        self
+    }
+
+    /// Whether the admin listener serves the web UI and authoring endpoints.
+    pub fn web_ui(&self) -> bool {
+        self.web_ui
     }
 
     /// Attach per-target action catalogs (for mint-time policy validation). Builder.
     #[must_use]
-    pub fn with_catalogs(mut self, catalogs: HashMap<String, Catalog>) -> Self {
+    pub fn with_catalogs(mut self, catalogs: HashMap<String, ActionCatalog>) -> Self {
         self.catalogs = catalogs;
         self
     }
@@ -140,7 +177,167 @@ impl Gateway {
             validate_tenant_policy(&policy, &owned)?;
         }
         self.validate_catalog(&policy)?;
+        self.lint_policy(&policy)?;
         Ok(self.mint(policy, ttl_seconds))
+    }
+
+    /// Run the model-aware policy lint with each configured service's imported model.
+    /// Error findings reject the mint (fail fast: a policy with a rule that can never do
+    /// what its author meant must not silently mint and then deny everything); warnings
+    /// are returned to the caller in logs only.
+    fn lint_policy(&self, policy: &hackamore_models::policy::Policy) -> Result<(), MintError> {
+        let findings = self.lint(policy);
+        for finding in findings.iter().filter(|f| !f.is_error()) {
+            tracing::warn!(
+                rule = finding.rule_index,
+                "policy lint warning: {}",
+                finding.message
+            );
+        }
+        if findings
+            .iter()
+            .any(hackamore_models::lint::Finding::is_error)
+        {
+            return Err(MintError::PolicyLint(findings));
+        }
+        Ok(())
+    }
+
+    /// A poison-tolerant read lock on the service router. A panicked writer can't leave the
+    /// routing table half-updated (services are replaced wholesale), so recovering the inner
+    /// value keeps the data plane available rather than propagating the panic.
+    fn router_read(&self) -> std::sync::RwLockReadGuard<'_, ServiceRouter> {
+        self.router
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Register a service at runtime (live registration), replacing any of the same name.
+    /// Returns whether an existing service was replaced.
+    pub fn register_service(&self, service: Service) -> bool {
+        self.router
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .upsert(service)
+    }
+
+    /// Remove a registered service by name; returns whether one was removed.
+    pub fn remove_service(&self, name: &str) -> bool {
+        self.router
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(name)
+    }
+
+    /// Vault a secret supplied at runtime — a live-registered service's inline credential.
+    /// Returns whether the credential store accepted it (a static/minting store may not).
+    pub fn vault_secret(&self, id: String, secret: hackamore_control::Secret) -> bool {
+        self.control.credentials.insert_runtime(id, secret)
+    }
+
+    /// Vault an AWS credential *bundle* supplied at runtime — an `aws-static` credential
+    /// registered via the admin API. Returns whether the store accepted it.
+    pub fn vault_aws(&self, id: String, cred: hackamore_control::AwsCredential) -> bool {
+        self.control.credentials.insert_aws_runtime(id, cred)
+    }
+
+    /// Register an AWS-bundle minting provider (assume-role / instance) supplied at runtime.
+    /// Returns whether the store supports AWS providers — only a minting `CachingCredentials`
+    /// does; a static store returns `false` and the admin API answers 409 (fail closed). The
+    /// provider is type-erased across the `CredentialStore` boundary (see
+    /// [`hackamore_control::CredentialStore::register_aws_provider`]).
+    pub fn register_aws_provider(
+        &self,
+        id: String,
+        provider: Arc<dyn hackamore_control::AwsCredentialProvider>,
+    ) -> bool {
+        self.control
+            .credentials
+            .register_aws_provider(id, Box::new(provider))
+    }
+
+    /// The set of credential **ids** the vault knows about (for `GET /admin/credentials`).
+    /// Ids only — never the secrets.
+    pub fn credential_ids(&self) -> Vec<String> {
+        self.control.credentials.ids()
+    }
+
+    /// Snapshot of registered services for the admin API (`GET /admin/services`): each
+    /// instance's routing/auth projection plus its imported [`ApiModel`] (if any). Owned, so
+    /// the router lock isn't held by the caller.
+    pub fn registered_services(&self) -> Vec<RegisteredService> {
+        self.router_read()
+            .services()
+            .iter()
+            .map(|s| RegisteredService {
+                name: s.name.clone(),
+                host: s.host.clone(),
+                upstream_base: s.upstream_base.clone(),
+                address: s.address.clone(),
+                auth: s.outbound.auth_label(),
+                credential: s.outbound.credential_id().unwrap_or_default().to_string(),
+                model: s.model.as_deref().cloned(),
+            })
+            .collect()
+    }
+
+    /// Lint a policy against the configured services' imported models (the same check
+    /// minting enforces; also served as `POST /policy/lint` on the admin API). Only
+    /// services with a model contribute model-derived checks; structural checks always run.
+    pub fn lint(
+        &self,
+        policy: &hackamore_models::policy::Policy,
+    ) -> Vec<hackamore_models::lint::Finding> {
+        let router = self.router_read();
+        let models: std::collections::BTreeMap<String, &hackamore_models::apimodel::ApiModel> =
+            router
+                .services()
+                .iter()
+                .filter_map(|s| s.model.as_deref().map(|m| (s.name.clone(), m)))
+                .collect();
+        hackamore_policy::lint::lint(policy, &models)
+    }
+
+    /// Dry-run one synthetic request through the real canonicalize → normalize →
+    /// decide path under a not-yet-minted policy (served as `POST /policy/test`). No
+    /// token, no forwarding, no audit: this is an authoring tool, not an enforcement
+    /// path.
+    pub fn dry_run(
+        &self,
+        req: &hackamore_models::dryrun::TestRequest,
+    ) -> Result<hackamore_models::dryrun::TestResponse, DryRunError> {
+        use hackamore_models::dryrun::{MatchedRule, TestResponse};
+        let router = self.router_read();
+        let service = router
+            .services()
+            .iter()
+            .find(|s| s.name == req.target)
+            .ok_or_else(|| DryRunError::UnknownTarget(req.target.clone()))?;
+        let method = http::Method::from_bytes(req.method.as_bytes())
+            .map_err(|_| DryRunError::InvalidMethod(req.method.clone()))?;
+        let body = if req.fields.as_object().is_some_and(|o| !o.is_empty()) {
+            serde_json::to_vec(&req.fields)
+                .map(bytes::Bytes::from)
+                .unwrap_or_default()
+        } else {
+            bytes::Bytes::new()
+        };
+        let proxy_req = ProxyRequest {
+            method,
+            path: req.path.clone(),
+            query: req.query.clone(),
+            headers: http::HeaderMap::new(),
+            body,
+        };
+        let canonical = canonicalize::path(&proxy_req.path)
+            .map_err(|_| DryRunError::NonCanonicalPath(req.path.clone()))?;
+        let action = normalize::normalize(service, &proxy_req, &canonical.decoded);
+        let trace = hackamore_policy::decide_traced(&action, &req.policy);
+        Ok(TestResponse {
+            action,
+            verdict: trace.verdict,
+            matched: MatchedRule::of(trace.matched_rule),
+        })
     }
 
     /// Validate a policy's named-action verbs against the catalogs. A target with no catalog
@@ -155,7 +352,8 @@ impl Gateway {
     fn validate_catalog(&self, policy: &hackamore_models::policy::Policy) -> Result<(), MintError> {
         use hackamore_models::action::Verb;
         use hackamore_models::policy::Effect;
-        let nonempty: Vec<&Catalog> = self.catalogs.values().filter(|c| !c.is_empty()).collect();
+        let nonempty: Vec<&ActionCatalog> =
+            self.catalogs.values().filter(|c| !c.is_empty()).collect();
         for rule in &policy.rules {
             if rule.effect != Effect::Allow {
                 continue;
@@ -248,14 +446,18 @@ impl Gateway {
         // for SigV4 services — a side effect that must not hide inside what reads as a pure
         // projection.
         let mut out = Vec::new();
-        for s in self.router.services() {
+        let router = self.router_read();
+        for s in router.services() {
             if !(any_target || named.contains(s.name.as_str())) {
                 continue;
             }
             let (mode, auth) = self.mint_service_auth(s, token, policy, now, ttl_remaining);
             out.push(hackamore_models::provision::ProvisionService {
                 target: s.name.clone(),
-                flavor: s.flavor.name().to_string(),
+                // A tool-config hint for the agent (which native config to write). Carried by
+                // the service's `tool_hint` (set by the CLI presets), NOT its name — so a
+                // service named `github-api`/`aws:ec2` still hints `github`/`aws`.
+                tool_hint: s.tool_hint.clone(),
                 address: s.address.clone(),
                 mode,
                 auth,
@@ -299,7 +501,7 @@ impl Gateway {
                     token: token.to_string(),
                 }),
             ),
-            Outbound::Bearer { .. } | Outbound::Header { .. } => (
+            Outbound::Bearer { .. } | Outbound::Header { .. } | Outbound::Basic { .. } => (
                 ProvisionMode::Inject,
                 ProvisionAuth::Bearer(BearerAuth {
                     token: token.to_string(),
@@ -320,9 +522,30 @@ impl Gateway {
             .headers
             .get(http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            && auth.starts_with("AWS4-HMAC-SHA256")
         {
-            return self.authenticate_sigv4(req, auth, now);
+            if auth.starts_with("AWS4-HMAC-SHA256") {
+                return self.authenticate_sigv4(req, auth, now);
+            }
+            // git-over-HTTPS presents the launch token in the Basic *password* slot. A
+            // present-but-malformed `Basic` header fails closed (it is never treated as a
+            // bearer fallback) so a broken credential can't slip through.
+            if let Some(prefix) = basic_scheme_value(auth) {
+                let Some(token) = basic_password(prefix) else {
+                    return Err(Box::new(reject(
+                        http::StatusCode::UNAUTHORIZED,
+                        DenyReason::Unauthenticated,
+                        "malformed Basic credential",
+                    )));
+                };
+                return match self.control.tokens.resolve(&token, now) {
+                    Some(policy) => Ok((policy, AuthSource::BasicPassword)),
+                    None => Err(Box::new(reject(
+                        http::StatusCode::UNAUTHORIZED,
+                        DenyReason::Unauthenticated,
+                        "unknown or expired hackamore token",
+                    ))),
+                };
+            }
         }
         let Some((token, source)) = extract_auth(&req.headers) else {
             return Err(Box::new(reject(
@@ -392,7 +615,7 @@ impl Gateway {
         // Route to a configured service by the request Host. An unmatched host is denied
         // (fail closed) — hackamore only forwards to its allowlist.
         let host = extract_host(&req.headers).unwrap_or_default();
-        let Some(service) = self.router.route(&host).cloned() else {
+        let Some(service) = self.router_read().route(&host).cloned() else {
             self.audit_raw(&host, Decision::Deny, "no service for host", now);
             return reject(
                 http::StatusCode::NOT_FOUND,
@@ -419,14 +642,23 @@ impl Gateway {
         let action = normalize::normalize(&service, &req, &canonical.decoded);
         req.path = canonical.encoded;
 
-        match hackamore_policy::decide(&action, &policy) {
+        let trace = hackamore_policy::decide_traced(&action, &policy);
+        match trace.verdict {
             Verdict::Deny(d) => {
-                self.audit(&action, Decision::Deny, &format!("{:?}", d.reason), now);
+                // Carry which rule denied (if any) so a denial is debuggable from the
+                // audit log alone; `None` = default-deny fallthrough.
+                let detail = match trace.matched_rule {
+                    Some(rule) => format!("{:?} (rule {rule})", d.reason),
+                    None => format!("{:?} (no rule matched)", d.reason),
+                };
+                self.audit(&action, Decision::Deny, &detail, now);
                 reject(http::StatusCode::FORBIDDEN, d.reason, "denied by policy")
             }
             // On allow the outbound credential is the matched service's property, not the
             // policy's — the engine's allow is bare.
-            Verdict::Allow(_) => self.plan_forward(&service, &action, req, source, now),
+            Verdict::Allow(_) => {
+                self.plan_forward(&service, &action, req, source, trace.matched_rule, now)
+            }
         }
     }
 
@@ -441,6 +673,7 @@ impl Gateway {
         action: &Action,
         req: ProxyRequest,
         source: AuthSource,
+        matched_rule: Option<usize>,
         now: u64,
     ) -> Outcome {
         let mut headers = sanitize_headers(&req.headers, source);
@@ -471,11 +704,9 @@ impl Gateway {
                 headers.insert(header_name, value);
                 format!("allowed; injected header {name} [{credential}]")
             }
-            Outbound::SigV4 {
+            Outbound::Basic {
+                username,
                 credential,
-                access_key_id,
-                region,
-                service: aws_service,
             } => {
                 let Some(secret) = self.control.credentials.resolve(credential) else {
                     self.audit(
@@ -490,11 +721,51 @@ impl Gateway {
                         "required credential is not configured",
                     );
                 };
+                // Basic auth is `base64(username:password)`; the password is the resolved
+                // secret. `.expose()` is the audited injection boundary — the encoded value
+                // never appears in the audit/outcome string.
+                let encoded = base64::engine::general_purpose::STANDARD
+                    .encode(format!("{username}:{}", secret.expose()));
+                let Ok(value) = http::HeaderValue::from_str(&format!("Basic {encoded}")) else {
+                    self.audit(action, Decision::Deny, "credential not header-safe", now);
+                    return reject(
+                        http::StatusCode::BAD_GATEWAY,
+                        DenyReason::NotAllowed,
+                        "credential is not header-safe",
+                    );
+                };
+                headers.insert(http::header::AUTHORIZATION, value);
+                format!("allowed; injected basic [{credential}]")
+            }
+            Outbound::SigV4 {
+                credential,
+                region,
+                service: aws_service,
+            } => {
+                // SigV4 resolves an AWS *bundle* (akid + secret + optional session token), not
+                // a token-shaped secret. A missing bundle (unknown id, or the id holds a
+                // token) fails closed.
+                let Some(bundle) = self.control.credentials.resolve_aws(credential) else {
+                    self.audit(
+                        action,
+                        Decision::Deny,
+                        &format!("credential '{credential}' not configured"),
+                        now,
+                    );
+                    return reject(
+                        http::StatusCode::BAD_GATEWAY,
+                        DenyReason::NotAllowed,
+                        "required credential is not configured",
+                    );
+                };
                 let host = host_of(&service.upstream_base);
+                // `.expose()` is the audited injection boundary — the secret and session
+                // token never appear in the audit/outcome string.
                 let signed = crate::sigv4::sign(
                     &crate::sigv4::Creds {
-                        access_key_id,
-                        secret_access_key: secret.expose(),
+                        access_key_id: &bundle.access_key_id,
+                        secret_access_key: bundle.secret_access_key.expose(),
+                        session_token: bundle.session_token.as_ref().map(|t| t.expose()),
                     },
                     region,
                     aws_service,
@@ -522,8 +793,21 @@ impl Gateway {
                     http::HeaderName::from_static("x-amz-content-sha256"),
                     &signed.content_sha256,
                 );
+                // Temporary credentials ride out their session token in the signed
+                // `X-Amz-Security-Token` header.
+                if let Some(token) = &signed.security_token {
+                    set_header(
+                        &mut headers,
+                        http::HeaderName::from_static("x-amz-security-token"),
+                        token,
+                    );
+                }
                 format!("allowed; sigv4 re-signed [{credential}]")
             }
+        };
+        let detail = match matched_rule {
+            Some(rule) => format!("{detail}; rule {rule}"),
+            None => detail,
         };
         self.audit(action, Decision::Allow, &detail, now);
 
@@ -583,8 +867,8 @@ impl Gateway {
     fn audit_raw(&self, host: &str, decision: Decision, detail: &str, now: u64) {
         let action = Action::of(
             "<unrouted>",
-            hackamore_models::action::Verb::crud(hackamore_models::action::CrudKind::Read),
-            hackamore_models::action::Resource::of(host, "host"),
+            hackamore_models::action::Verb::method("GET"),
+            hackamore_models::action::Resource::of(host),
         );
         self.audit(&action, decision, detail, now);
     }
@@ -656,8 +940,33 @@ fn validate_tenant_policy(
 
 /// Why a mint request was refused. A typed error so the data plane maps each cause to a
 /// precise response instead of threading an opaque `String`. All variants are
-/// authorization/validation failures the operator surface renders as `403`.
+/// Why a dry-run request could not even be normalized (the authoring-tool analogue of
+/// the proxy's 4xx rejections). Rendered as a 400 by the admin API.
 #[derive(Debug, PartialEq, Eq)]
+pub enum DryRunError {
+    /// `target` names no configured service.
+    UnknownTarget(String),
+    /// The method string is not a valid HTTP method.
+    InvalidMethod(String),
+    /// The path failed canonicalization (escapes the root, bad encoding, …).
+    NonCanonicalPath(String),
+}
+
+impl std::fmt::Display for DryRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DryRunError::UnknownTarget(t) => write!(f, "unknown target '{t}'"),
+            DryRunError::InvalidMethod(m) => write!(f, "invalid method '{m}'"),
+            DryRunError::NonCanonicalPath(p) => write!(f, "non-canonical path '{p}'"),
+        }
+    }
+}
+
+impl std::error::Error for DryRunError {}
+
+/// authorization/validation failures the operator surface renders as `403`.
+/// (`PartialEq` only: lint findings are fluorite wire types without `Eq`.)
+#[derive(Debug, PartialEq)]
 pub enum MintError {
     /// Tenants are configured but the request presented no tenant credential.
     MissingTenant,
@@ -670,6 +979,9 @@ pub enum MintError {
     TenantWildcardTarget,
     /// A named-action verb is absent from the target's action catalog.
     UnknownAction { target: String, action: String },
+    /// The policy failed lint with at least one `Error` finding. Carries *all* findings
+    /// (warnings included) so the rejection response can show the full picture.
+    PolicyLint(Vec<hackamore_models::lint::Finding>),
 }
 
 impl std::fmt::Display for MintError {
@@ -686,6 +998,18 @@ impl std::fmt::Display for MintError {
                     f,
                     "action '{action}' is not in the catalog for target '{target}'"
                 )
+            }
+            MintError::PolicyLint(findings) => {
+                let errors: Vec<&hackamore_models::lint::Finding> =
+                    findings.iter().filter(|f| f.is_error()).collect();
+                let first = errors
+                    .first()
+                    .map(|e| format!("rule {}: {}", e.rule_index, e.message))
+                    .unwrap_or_default();
+                match errors.len() {
+                    0 | 1 => write!(f, "policy failed lint: {first}"),
+                    n => write!(f, "policy failed lint: {first} (+{} more)", n - 1),
+                }
             }
         }
     }
@@ -709,6 +1033,10 @@ enum AuthSource {
     /// The token came from `Authorization` itself (e.g. `gh`/`kubectl`, which have only
     /// one auth slot); `Authorization` is the hackamore token and must not be forwarded.
     Authorization,
+    /// The token came from the password half of an inbound HTTP Basic `Authorization`
+    /// (git-over-HTTPS: `Basic base64(x-access-token:<launch token>)`). The inbound
+    /// `Authorization` is hackamore's and must be stripped/replaced before forwarding.
+    BasicPassword,
     /// The request was authenticated by an inbound AWS SigV4 signature; the inbound
     /// `Authorization` and `X-Amz-*` signing headers are hackamore's to replace on re-sign.
     SigV4,
@@ -740,6 +1068,34 @@ fn extract_auth(headers: &http::HeaderMap) -> Option<(String, AuthSource)> {
         Some((value.trim().to_string(), AuthSource::Authorization))
     } else {
         None
+    }
+}
+
+/// The base64 payload of a `Basic <payload>` `Authorization` value (case-insensitive
+/// scheme), or `None` if it isn't a Basic header.
+fn basic_scheme_value(auth: &str) -> Option<&str> {
+    let (scheme, value) = auth.split_once(' ')?;
+    if scheme.eq_ignore_ascii_case("basic") {
+        Some(value.trim())
+    } else {
+        None
+    }
+}
+
+/// Decode the password half of an inbound HTTP Basic credential: base64-decode `payload`,
+/// then take everything after the first `:` (the username is non-secret config — for git it
+/// is `x-access-token`). Fail closed (`None`) on bad base64, non-UTF-8, a missing `:`, or an
+/// empty password.
+fn basic_password(payload: &str) -> Option<String> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let (_user, pass) = text.split_once(':')?;
+    if pass.is_empty() {
+        None
+    } else {
+        Some(pass.to_string())
     }
 }
 
@@ -775,9 +1131,10 @@ fn is_dropped_header(name: &http::HeaderName, source: AuthSource) -> bool {
         return true;
     }
     if n == "authorization" {
-        // The hackamore token (Authorization source) and the inbound SigV4 signature (SigV4
-        // source) are both hackamore's to strip/replace; a HackamoreHeader token leaves
-        // Authorization as the consumer's own credential.
+        // The hackamore token (Authorization source), the inbound SigV4 signature (SigV4
+        // source), and the inbound Basic launch token (BasicPassword source) are all
+        // hackamore's to strip/replace; only a HackamoreHeader token leaves Authorization as
+        // the consumer's own credential.
         return source != AuthSource::HackamoreHeader;
     }
     // Inbound SigV4 signing headers are replaced by the outbound re-sign.
@@ -791,7 +1148,7 @@ fn is_dropped_header(name: &http::HeaderName, source: AuthSource) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::service::{Extract, Flavor, Service, ServiceRouter};
+    use crate::service::{Extract, Service, ServiceRouter};
     use hackamore_control::{InMemoryAudit, Secret};
     use hackamore_models::policy::{Effect, Match, Policy, Rule};
 
@@ -809,14 +1166,12 @@ mod tests {
         (Arc::new(plane), audit, creds)
     }
 
-    /// A catch-all GitHub-flavored service that injects the `github-app` credential.
+    /// A catch-all service that injects the `github-app` credential.
     fn router() -> ServiceRouter {
         ServiceRouter::new(vec![
-            Service::new("github", "*", "https://api.github.com")
-                .with_flavor(Flavor::Github)
-                .with_outbound(Outbound::Bearer {
-                    credential: "github-app".into(),
-                }),
+            Service::new("github", "*", "https://api.github.com").with_outbound(Outbound::Bearer {
+                credential: "github-app".into(),
+            }),
         ])
     }
 
@@ -831,6 +1186,17 @@ mod tests {
             Service::new("keyed", "*", "https://api.keyed.com").with_outbound(Outbound::Header {
                 name: "X-API-Key".into(),
                 credential: "keyed-key".into(),
+            }),
+        ])
+    }
+
+    /// A catch-all generic service that injects a credential as HTTP Basic auth with the
+    /// git-over-HTTPS username.
+    fn router_basic() -> ServiceRouter {
+        ServiceRouter::new(vec![
+            Service::new("git", "*", "https://github.com").with_outbound(Outbound::Basic {
+                username: "x-access-token".into(),
+                credential: "gh-login".into(),
             }),
         ])
     }
@@ -855,9 +1221,7 @@ mod tests {
                 effect: Effect::Allow,
                 matches: Match {
                     targets: vec![],
-                    verbs: vec![hackamore_models::action::Verb::crud(
-                        hackamore_models::action::CrudKind::Read,
-                    )],
+                    verbs: vec![hackamore_models::action::Verb::method("GET")],
                     resources: vec![],
                     conditions: vec![],
                 },
@@ -1045,20 +1409,73 @@ mod tests {
     }
 
     #[test]
-    fn sigv4_mechanism_signs_outbound_request() {
-        let (control, _a, creds) = test_control();
-        creds.insert("aws-secret", Secret::new("secret-key"));
-        let router = ServiceRouter::new(vec![
+    fn basic_mechanism_injects_base64_authorization() {
+        let (control, audit, creds) = test_control();
+        creds.insert("gh-login", Secret::new("ghp_realtoken"));
+        let gw = Gateway::with_clock(control, router_basic(), fixed_clock(1_000));
+        let minted = gw.mint(allow_all(), 60);
+        match gw.handle(get(bearer(&minted.token), "/octocat/hello.git/info/refs")) {
+            Outcome::Forward(plan) => {
+                let auth = plan
+                    .headers
+                    .get(http::header::AUTHORIZATION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                // Authorization: Basic base64("x-access-token:ghp_realtoken").
+                let expected = base64::engine::general_purpose::STANDARD
+                    .encode("x-access-token:ghp_realtoken");
+                assert_eq!(auth, format!("Basic {expected}"));
+                // The real secret never appears verbatim in the header.
+                assert!(!auth.contains("ghp_realtoken"));
+            }
+            Outcome::Reject(_) => panic!("expected forward"),
+        }
+        // The audit detail names the credential id, never the secret.
+        let events = audit.events();
+        assert_eq!(events[0].decision, Decision::Allow);
+        assert!(events[0].detail.contains("injected basic [gh-login]"));
+        assert!(!events[0].detail.contains("ghp_realtoken"));
+    }
+
+    #[test]
+    fn basic_mechanism_missing_credential_fails_closed() {
+        let (control, _a, _) = test_control();
+        // No `gh-login` credential seeded → fail closed with a bad gateway.
+        let gw = Gateway::with_clock(control, router_basic(), fixed_clock(1_000));
+        let minted = gw.mint(allow_all(), 60);
+        match gw.handle(get(bearer(&minted.token), "/x")) {
+            Outcome::Reject(r) => assert_eq!(r.status, http::StatusCode::BAD_GATEWAY),
+            Outcome::Forward(_) => panic!("expected reject"),
+        }
+    }
+
+    fn sigv4_ec2_router() -> ServiceRouter {
+        ServiceRouter::new(vec![
             Service::new("ec2", "*", "https://ec2.us-east-1.amazonaws.com").with_outbound(
                 Outbound::SigV4 {
                     credential: "aws-secret".into(),
-                    access_key_id: "AKID".into(),
                     region: "us-east-1".into(),
                     service: "ec2".into(),
                 },
             ),
-        ]);
-        let gw = Gateway::with_clock(control, router, fixed_clock(1_700_000_000_000));
+        ])
+    }
+
+    #[test]
+    fn sigv4_mechanism_signs_outbound_request() {
+        let (control, _a, creds) = test_control();
+        // The akid now comes from the resolved AWS bundle, not from the service config.
+        creds.insert_aws(
+            "aws-secret",
+            hackamore_control::AwsCredential {
+                access_key_id: "AKID".into(),
+                secret_access_key: Secret::new("secret-key"),
+                session_token: None,
+                expires_at_ms: None,
+            },
+        );
+        let gw = Gateway::with_clock(control, sigv4_ec2_router(), fixed_clock(1_700_000_000_000));
         let minted = gw.mint(allow_all(), 60);
         match gw.handle(get(bearer(&minted.token), "/")) {
             Outcome::Forward(plan) => {
@@ -1075,8 +1492,60 @@ mod tests {
                 assert!(!auth.contains("secret-key"));
                 assert!(plan.headers.get("x-amz-date").is_some());
                 assert!(plan.headers.get("x-amz-content-sha256").is_some());
+                // A long-lived key pair (no session token) sets no security-token header.
+                assert!(plan.headers.get("x-amz-security-token").is_none());
             }
             Outcome::Reject(_) => panic!("expected forward"),
+        }
+    }
+
+    #[test]
+    fn sigv4_mechanism_with_session_token_sets_security_token_header() {
+        let (control, _a, creds) = test_control();
+        creds.insert_aws(
+            "aws-secret",
+            hackamore_control::AwsCredential {
+                access_key_id: "AKID".into(),
+                secret_access_key: Secret::new("secret-key"),
+                session_token: Some(Secret::new("the-session-token")),
+                expires_at_ms: None,
+            },
+        );
+        let gw = Gateway::with_clock(control, sigv4_ec2_router(), fixed_clock(1_700_000_000_000));
+        let minted = gw.mint(allow_all(), 60);
+        match gw.handle(get(bearer(&minted.token), "/")) {
+            Outcome::Forward(plan) => {
+                let token = plan
+                    .headers
+                    .get("x-amz-security-token")
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                assert_eq!(token, "the-session-token");
+                // The session token is part of the signed header set.
+                let auth = plan
+                    .headers
+                    .get(http::header::AUTHORIZATION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                assert!(auth.contains("x-amz-security-token"));
+            }
+            Outcome::Reject(_) => panic!("expected forward"),
+        }
+    }
+
+    #[test]
+    fn sigv4_mechanism_missing_bundle_fails_closed() {
+        let (control, _a, creds) = test_control();
+        // Seed a *token* under the id the service expects an AWS bundle for → resolve_aws
+        // returns None → fail closed.
+        creds.insert("aws-secret", Secret::new("not-a-bundle"));
+        let gw = Gateway::with_clock(control, sigv4_ec2_router(), fixed_clock(1_700_000_000_000));
+        let minted = gw.mint(allow_all(), 60);
+        match gw.handle(get(bearer(&minted.token), "/")) {
+            Outcome::Reject(r) => assert_eq!(r.status, http::StatusCode::BAD_GATEWAY),
+            Outcome::Forward(_) => panic!("expected reject"),
         }
     }
 
@@ -1092,6 +1561,7 @@ mod tests {
             &crate::sigv4::Creds {
                 access_key_id: akid,
                 secret_access_key: secret,
+                session_token: None,
             },
             "us-east-1",
             "ec2",
@@ -1131,12 +1601,11 @@ mod tests {
             )
             .with_outbound(Outbound::SigV4 {
                 credential: "aws-secret".into(),
-                access_key_id: "REALAKID".into(),
                 region: "us-east-1".into(),
                 service: "ec2".into(),
             })
             .with_extract(Extract {
-                protocol: crate::service::Protocol::AwsQuery,
+                protocol: crate::service::Protocol::parse(Some("aws-query")),
                 path_template: None,
             }),
         ])
@@ -1145,7 +1614,16 @@ mod tests {
     #[test]
     fn sigv4_inbound_authenticates_then_resigns_with_real_credential() {
         let (control, _a, creds) = test_control();
-        creds.insert("aws-secret", Secret::new("real-secret"));
+        // The real akid + secret live in the AWS bundle; the inbound dummy AKID is unrelated.
+        creds.insert_aws(
+            "aws-secret",
+            hackamore_control::AwsCredential {
+                access_key_id: "REALAKID".into(),
+                secret_access_key: Secret::new("real-secret"),
+                session_token: None,
+                expires_at_ms: None,
+            },
+        );
         let now = 1_700_000_000_000;
         let gw = Gateway::with_clock(control.clone(), aws_router(), fixed_clock(now));
         let dummy = control.tokens.mint_sigv4(allow_all(), 60, now);
@@ -1178,7 +1656,15 @@ mod tests {
     #[test]
     fn sigv4_inbound_bad_signature_is_unauthorized() {
         let (control, _a, creds) = test_control();
-        creds.insert("aws-secret", Secret::new("real-secret"));
+        creds.insert_aws(
+            "aws-secret",
+            hackamore_control::AwsCredential {
+                access_key_id: "REALAKID".into(),
+                secret_access_key: Secret::new("real-secret"),
+                session_token: None,
+                expires_at_ms: None,
+            },
+        );
         let now = 1_700_000_000_000;
         let gw = Gateway::with_clock(control.clone(), aws_router(), fixed_clock(now));
         let dummy = control.tokens.mint_sigv4(allow_all(), 60, now);
@@ -1232,15 +1718,97 @@ mod tests {
             Outcome::Forward(_) => panic!("expected reject"),
         }
         assert_eq!(audit.events()[0].decision, Decision::Deny);
+        // Default-deny fallthrough is explicit in the audit detail.
+        assert_eq!(audit.events()[0].detail, "NotAllowed (no rule matched)");
+    }
+
+    #[test]
+    fn audit_detail_carries_the_matched_rule_index() {
+        let (control, audit, _) = test_control();
+        let gw = Gateway::with_clock(control, router(), fixed_clock(1_000));
+        let minted = gw.mint(read_only(), 60);
+        let get = ProxyRequest {
+            method: http::Method::GET,
+            path: "/repos/o/r".into(),
+            query: String::new(),
+            headers: bearer(&minted.token),
+            body: bytes::Bytes::new(),
+        };
+        assert!(matches!(gw.handle(get), Outcome::Forward(_)));
+        assert_eq!(audit.events()[0].decision, Decision::Allow);
+        assert!(
+            audit.events()[0].detail.ends_with("; rule 0"),
+            "{}",
+            audit.events()[0].detail
+        );
+    }
+
+    #[test]
+    fn mint_rejects_policies_that_fail_lint() {
+        let (control, _, _) = test_control();
+        let gw = Gateway::with_clock(control, router(), fixed_clock(1_000));
+
+        // An unmatchable glob (leading slash) is an Error finding.
+        let bad_glob = Policy {
+            rules: vec![Rule {
+                effect: Effect::Allow,
+                matches: Match {
+                    targets: vec![],
+                    verbs: vec![],
+                    resources: vec!["/repos/o/**".into()],
+                    conditions: vec![],
+                },
+            }],
+        };
+        match gw.mint_checked(bad_glob, 60, None) {
+            Err(MintError::PolicyLint(findings)) => {
+                assert!(findings.iter().any(|f| f.is_error()));
+            }
+            other => panic!("expected lint rejection, got {other:?}"),
+        }
+
+        // A deny rule shadowed by an earlier allow-all never fires: also rejected.
+        let shadowed_deny = Policy {
+            rules: vec![
+                allow_all().rules[0].clone(),
+                Rule {
+                    effect: Effect::Deny,
+                    matches: Match {
+                        targets: vec![],
+                        verbs: vec![hackamore_models::action::Verb::method("DELETE")],
+                        resources: vec![],
+                        conditions: vec![],
+                    },
+                },
+            ],
+        };
+        assert!(matches!(
+            gw.mint_checked(shadowed_deny, 60, None),
+            Err(MintError::PolicyLint(_))
+        ));
+
+        // Warnings alone do not reject: a glob outside the curated github catalog mints.
+        let uncatalogued = Policy {
+            rules: vec![Rule {
+                effect: Effect::Allow,
+                matches: Match {
+                    targets: vec!["github".into()],
+                    verbs: vec![],
+                    resources: vec!["orgs/octocat/teams".into()],
+                    conditions: vec![],
+                },
+            }],
+        };
+        assert!(gw.mint_checked(uncatalogued, 60, None).is_ok());
     }
 
     fn two_service_router() -> ServiceRouter {
         ServiceRouter::new(vec![
-            Service::new("github", "api.github.com", "https://api.github.com")
-                .with_flavor(Flavor::Github)
+            Service::new("github-api", "api.github.com", "https://api.github.com")
                 .with_outbound(Outbound::Bearer {
                     credential: "github-app".into(),
                 })
+                .with_tool_hint("github")
                 .with_address("https://gh.hackamore.local"),
             Service::new("openai", "api.openai.com", "https://api.openai.com"),
         ])
@@ -1264,12 +1832,14 @@ mod tests {
     fn provision_lists_only_granted_services() {
         let (control, _a, _) = test_control();
         let gw = Gateway::with_clock(control, two_service_router(), fixed_clock(1_000));
-        let minted = gw.mint(target_policy("github"), 60);
+        let minted = gw.mint(target_policy("github-api"), 60);
         let doc = gw.provision(&minted.token).unwrap();
         assert_eq!(doc.hackamore_token, minted.token);
         assert_eq!(doc.services.len(), 1);
-        assert_eq!(doc.services[0].target, "github");
-        assert_eq!(doc.services[0].flavor, "github");
+        assert_eq!(doc.services[0].target, "github-api");
+        // The agent tool-config hint is the service's `tool_hint` (set via the preset), not
+        // its name — a `github-api` service hints `github`.
+        assert_eq!(doc.services[0].tool_hint, "github");
         assert_eq!(doc.services[0].address, "https://gh.hackamore.local");
         assert_eq!(
             doc.services[0].mode,
@@ -1281,12 +1851,12 @@ mod tests {
 
     #[test]
     fn catalog_validates_named_actions_at_mint() {
-        use crate::service::Catalog;
+        use crate::service::ActionCatalog;
         let (control, _a, _) = test_control();
         let mut catalogs = std::collections::HashMap::new();
         catalogs.insert(
             "github".to_string(),
-            Catalog::of(["repo:read".to_string(), "repo:write".to_string()]),
+            ActionCatalog::of(["repo:read".to_string(), "repo:write".to_string()]),
         );
         let gw = Gateway::with_clock(control, two_service_router(), fixed_clock(1_000))
             .with_catalogs(catalogs);
@@ -1338,10 +1908,13 @@ mod tests {
 
     #[test]
     fn catalog_validates_empty_target_named_actions() {
-        use crate::service::Catalog;
+        use crate::service::ActionCatalog;
         let (control, _a, _) = test_control();
         let mut catalogs = std::collections::HashMap::new();
-        catalogs.insert("github".to_string(), Catalog::of(["repo:read".to_string()]));
+        catalogs.insert(
+            "github".to_string(),
+            ActionCatalog::of(["repo:read".to_string()]),
+        );
         let gw = Gateway::with_clock(control, two_service_router(), fixed_clock(1_000))
             .with_catalogs(catalogs);
 
@@ -1408,6 +1981,69 @@ mod tests {
             openai.mode,
             hackamore_models::provision::ProvisionMode::Passthrough
         );
+    }
+
+    /// Headers carrying the launch token in the HTTP Basic *password* slot, with the git
+    /// `x-access-token` username (the Basic-inbound shape `git push` uses).
+    fn basic_password(token: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        let encoded =
+            base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        h.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(&format!("Basic {encoded}")).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn basic_inbound_password_resolves_bound_policy_and_injects() {
+        let (control, audit, _) = test_control();
+        let gw = Gateway::with_clock(control.clone(), router(), fixed_clock(1_000));
+        let minted = gw.mint(allow_all(), 60);
+        // The launch token rides in the Basic password slot; hackamore resolves it to the
+        // bound policy exactly like the bearer path and injects the target's real secret.
+        match gw.handle(get(basic_password(&minted.token), "/repos/octocat/hello")) {
+            Outcome::Forward(plan) => {
+                let auth = plan
+                    .headers
+                    .get(http::header::AUTHORIZATION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap();
+                // The inbound Basic credential is gone; the target's real secret replaces it.
+                assert_eq!(auth, "Bearer real-secret-token");
+                assert!(!auth.contains(&minted.token));
+            }
+            Outcome::Reject(_) => panic!("expected forward"),
+        }
+        assert_eq!(audit.events()[0].decision, Decision::Allow);
+    }
+
+    #[test]
+    fn basic_inbound_unknown_token_is_unauthorized() {
+        let (control, _a, _) = test_control();
+        let gw = Gateway::new(control, router());
+        match gw.handle(get(basic_password("not-a-real-token"), "/repos/o/r")) {
+            Outcome::Reject(r) => assert_eq!(r.reason, DenyReason::Unauthenticated),
+            Outcome::Forward(_) => panic!("expected reject"),
+        }
+    }
+
+    #[test]
+    fn malformed_basic_is_unauthorized() {
+        let (control, _a, _) = test_control();
+        let gw = Gateway::new(control, router());
+        let mut h = http::HeaderMap::new();
+        // Not valid base64, and no colon even if it were → fail closed.
+        h.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_static("Basic !!!notbase64!!!"),
+        );
+        match gw.handle(get(h, "/repos/o/r")) {
+            Outcome::Reject(r) => assert_eq!(r.reason, DenyReason::Unauthenticated),
+            Outcome::Forward(_) => panic!("expected reject"),
+        }
     }
 
     #[test]

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hackamore — policy studio</title>
+  <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><span class="prompt">▸</span> hackamore <span class="sub">policy studio</span></div>
+    <p class="tagline">Browse what policies can say, compose one, lint it live, dry-run a request, mint a token. <span class="deny-ink">Default-deny</span> — anything you don't explicitly allow is denied.</p>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-view="compose">Compose</button>
+      <button class="tab" data-view="server">Server</button>
+      <button class="tab" data-view="services">Services</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ COMPOSE ============ -->
+    <section class="view active" id="view-compose">
+      <div class="view-head">
+        <span class="eyebrow">Policy</span>
+        <h2>Compose &amp; verify</h2>
+        <p class="muted">Author rules with controls, not JSON. Lint runs as you type; dry-run a request before you mint.</p>
+      </div>
+
+      <div class="rules-head">
+        <span class="eyebrow">Rules</span>
+        <span class="lint-pill" id="lint-status"></span>
+      </div>
+      <div id="rules"></div>
+      <div class="row"><button class="ghost" id="add-rule">+ empty rule</button></div>
+      <div id="findings" class="findings"></div>
+
+      <div class="split-2">
+        <div class="card-block">
+          <span class="eyebrow">Dry-run a request</span>
+          <div class="row">
+            <select id="test-target" title="target service"></select>
+            <select id="test-method">
+              <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+            </select>
+          </div>
+          <div class="row"><input id="test-path" class="grow" placeholder="/repos/octocat/hello/pulls" spellcheck="false"></div>
+          <div class="row"><input id="test-fields" class="grow" placeholder='body fields, e.g. {"base":"main"}' spellcheck="false"></div>
+          <div class="row"><button class="accent" id="run-test">test ▸</button></div>
+          <div id="test-result" class="verdict"></div>
+        </div>
+
+        <div class="card-block">
+          <span class="eyebrow">Mint a token</span>
+          <p class="muted small">Issues a launch token bound to this policy. Lint errors block the mint.</p>
+          <div class="row"><label class="inline">ttl <input id="mint-ttl" type="number" value="3600" min="1"> s</label><button class="accent" id="mint">mint ▸</button></div>
+          <div id="mint-result" class="verdict"></div>
+        </div>
+      </div>
+
+      <details class="disclosure" id="json-disc">
+        <summary><span class="tw">▸</span> Policy JSON <span class="muted small">— export / import the wire policy (read-only)</span></summary>
+        <div class="disc-body tight">
+          <textarea id="policy-json" rows="10" spellcheck="false" readonly></textarea>
+          <div class="row"><button id="copy-json">copy</button></div>
+          <div class="row import-row">
+            <input id="import-json" class="grow" placeholder="paste a policy JSON here to load it into the composer" spellcheck="false">
+            <button id="apply-json">load</button>
+          </div>
+          <span id="import-msg" class="muted small"></span>
+        </div>
+      </details>
+    </section>
+
+    <!-- ============ SERVER ============ -->
+    <section class="view" id="view-server">
+      <div class="view-head">
+        <span class="eyebrow">This server</span>
+        <h2>Configured services</h2>
+        <p class="muted">What this hackamore is wired to, and what each injects upstream on an allow. Credential <b>ids</b> are vault keys — never the secret.</p>
+      </div>
+      <div id="services-body"></div>
+
+      <div class="view-head" style="margin-top:1.8rem">
+        <span class="eyebrow">Glossary</span>
+        <h2>The vocabulary</h2>
+      </div>
+      <dl class="glossary">
+        <dt>service / target</dt><dd>One configured upstream instance. A rule's <b>targets</b> name these (empty = any service).</dd>
+        <dt>verb</dt><dd>The literal thing the request states: the HTTP <b>method</b> (<b>GET / POST / PUT / PATCH / DELETE</b>, …) or a named action (e.g. <code>ec2:RunInstances</code>). Empty in a rule = any verb.</dd>
+        <dt>resource</dt><dd>What's acted on: a <b>path</b> (e.g. <code>repos/octocat/hello/pulls</code>). Rules match paths with globs.</dd>
+        <dt>glob</dt><dd><code>*</code> matches one path segment, <code>**</code> the rest. e.g. <code>repos/*/*/pulls</code>.</dd>
+        <dt>condition</dt><dd>An extra constraint on a request <b>field</b> — <b>equals</b>, <b>one-of</b>, or <b>exists</b>. Field names come from a service's imported model.</dd>
+        <dt>effect</dt><dd><b>Allow</b> or <b>Deny</b>. An explicit Deny always wins over an Allow.</dd>
+        <dt>default-deny</dt><dd>If no rule matches, the request is denied. There is no bypass.</dd>
+        <dt>credential id</dt><dd>A vault key naming the real secret a service injects upstream. The agent never sees it; neither does this UI.</dd>
+        <dt>model</dt><dd>A service's imported API description (OpenAPI/Smithy) — operations, selectors (method + route, or named action), fields. The source of truth lint and discovery work from.</dd>
+      </dl>
+    </section>
+
+    <!-- ============ SERVICES ============ -->
+    <section class="view" id="view-services">
+      <div class="view-head">
+        <span class="eyebrow">Runtime</span>
+        <h2>Registered services</h2>
+        <p class="muted">Services added at runtime from an OpenAPI or Smithy description. The description generates the catalog; hackamore enforces and proxies to it.</p>
+      </div>
+
+      <div class="card-block svc-form">
+        <span class="eyebrow">Add a service</span>
+        <div class="row">
+          <input id="svc-name" class="grow" placeholder="name, e.g. petstore" spellcheck="false">
+          <input id="svc-host" class="grow" placeholder="host (optional — defaults to upstream host)" spellcheck="false">
+        </div>
+        <div class="row">
+          <input id="svc-upstream" class="grow" placeholder="upstreamBase, e.g. https://api.petstore.example.com" spellcheck="false">
+          <label class="inline">idl
+            <select id="svc-idl">
+              <option value="openapi">openapi</option>
+              <option value="smithy">smithy</option>
+            </select>
+          </label>
+        </div>
+        <div class="row svc-source">
+          <label class="src-pick"><input type="radio" name="svc-src" value="file" checked> file path</label>
+          <input id="svc-file" class="grow" placeholder="/path/to/openapi.json" spellcheck="false">
+        </div>
+        <div class="row svc-source">
+          <label class="src-pick"><input type="radio" name="svc-src" value="url"> url</label>
+          <input id="svc-url" class="grow" placeholder="https://example.com/openapi.json" spellcheck="false" disabled>
+        </div>
+        <div class="row">
+          <input id="svc-address" class="grow" placeholder="address (optional)" spellcheck="false">
+          <label class="inline">outbound
+            <select id="svc-outbound">
+              <option value="passthrough">passthrough</option>
+              <option value="bearer">bearer</option>
+              <option value="header">header</option>
+              <option value="basic">basic</option>
+              <option value="sigv4">sigv4</option>
+            </select>
+          </label>
+        </div>
+        <div class="row svc-outbound-extra" id="svc-header-row" hidden>
+          <label class="field-label">header name</label>
+          <input id="svc-header-name" value="X-API-Key" spellcheck="false">
+        </div>
+        <div class="row svc-outbound-extra" id="svc-basic-row" hidden>
+          <label class="field-label">username</label>
+          <input id="svc-username" value="x-access-token" spellcheck="false">
+        </div>
+        <div class="row svc-outbound-extra" id="svc-secret-row" hidden>
+          <label class="field-label">secret</label>
+          <input id="svc-secret" class="grow" placeholder="the actual token / key — vaulted, never echoed" spellcheck="false">
+        </div>
+        <div class="row svc-outbound-extra" id="svc-sigv4-row" hidden>
+          <input id="svc-akid" class="grow" placeholder="access key id" spellcheck="false">
+          <input id="svc-region" placeholder="region, e.g. us-east-1" spellcheck="false">
+          <input id="svc-service" placeholder="service, e.g. ec2" spellcheck="false">
+        </div>
+        <div class="row"><button class="accent" id="svc-register">register ▸</button></div>
+        <div id="svc-form-error" class="svc-error"></div>
+      </div>
+
+      <div id="svc-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

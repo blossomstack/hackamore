@@ -1,0 +1,46 @@
+/// The admin dry-run API: run one synthetic request through the real normalize + decide
+/// path without a token, returning the normalized action, the verdict, and which rule
+/// decided — the web UI's "test this policy" panel and `policy test`'s server-side twin.
+package dryrun;
+
+use action.Action;
+use policy.Policy;
+use verdict.Verdict;
+
+/// One synthetic request to decide under a (not-yet-minted) policy.
+struct TestRequest {
+    policy: Policy,
+    /// Configured service instance name to normalize as (`Action.target`).
+    target: String,
+    /// HTTP method, e.g. "POST".
+    method: String,
+    /// Request path with leading slash, e.g. "/repos/o/r/pulls".
+    path: String,
+    /// Raw query string without the `?`; may be empty.
+    query: String,
+    /// JSON object standing in for the request body's condition fields.
+    fields: Any,
+}
+
+/// A matched rule's position in the policy document.
+struct RuleIndex {
+    index: u64,
+}
+
+/// No rule matched — the verdict is the default-deny fallthrough.
+struct NoMatch {}
+
+/// Which rule decided the verdict. A closed union so "matched nothing" cannot be
+/// confused with "matched rule 0".
+#[type_tag = "type"]
+union MatchedRule {
+    Rule(RuleIndex),
+    NoMatch(NoMatch),
+}
+
+/// The dry-run result: what the request normalized to and how the policy decided it.
+struct TestResponse {
+    action: Action,
+    verdict: Verdict,
+    matched: MatchedRule,
+}

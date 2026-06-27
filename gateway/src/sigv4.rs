@@ -20,10 +20,14 @@ use ring::{digest, hmac};
 /// uses 5 minutes.
 const MAX_SKEW_MS: u64 = 5 * 60 * 1000;
 
-/// An AWS credential pair.
+/// An AWS credential pair, plus an optional `session_token` for temporary credentials. When
+/// present, the token rides out in `X-Amz-Security-Token`, which is part of the SigV4 signed
+/// header set, so it both rotates with the rest and is covered by the signature.
 pub struct Creds<'a> {
     pub access_key_id: &'a str,
     pub secret_access_key: &'a str,
+    /// The AWS session token for temporary credentials, or `None` for a long-lived key pair.
+    pub session_token: Option<&'a str>,
 }
 
 /// The headers a caller must set on the outbound request to make it SigV4-signed.
@@ -31,16 +35,25 @@ pub struct Signed {
     pub authorization: String,
     pub amz_date: String,
     pub content_sha256: String,
+    /// The `X-Amz-Security-Token` value to set, present iff the request was signed with a
+    /// session token. Caller sets the header only when this is `Some`.
+    pub security_token: Option<String>,
 }
 
 /// hackamore's own outbound signer uses this minimal header set — the common AWS request
 /// shape, accepted by every service. (The *inbound* check is not limited to this set; it
-/// honors whatever the client signed.)
+/// honors whatever the client signed.) When a session token is present, the signed set gains
+/// `x-amz-security-token`, computed dynamically in [`sign`] (it sorts after `x-amz-date`).
 const OUTBOUND_SIGNED_HEADERS: &str = "host;x-amz-content-sha256;x-amz-date";
 
 /// Sign a request, returning the `Authorization`, `X-Amz-Date`, and `X-Amz-Content-Sha256`
-/// header values. `canonical_uri` is the (already `/`-prefixed) path; `query` is the raw
-/// query string; `epoch_ms` is the signing time.
+/// header values (and, for temporary credentials, the `X-Amz-Security-Token` value).
+/// `canonical_uri` is the (already `/`-prefixed) path; `query` is the raw query string;
+/// `epoch_ms` is the signing time.
+///
+/// With no session token the output is byte-identical to the long-lived-key case (3 signed
+/// headers). With one, `x-amz-security-token` joins the canonical header set **and** the
+/// `SignedHeaders` list, and the token is returned for the caller to set on the wire.
 #[allow(clippy::too_many_arguments)]
 pub fn sign(
     creds: &Creds,
@@ -55,17 +68,26 @@ pub fn sign(
 ) -> Signed {
     let (amz_date, datestamp) = format_amz_datetime(epoch_ms);
     let content_sha256 = sha256_hex(body);
-    let headers = [
+    let mut headers = vec![
         ("host".to_string(), host.to_string()),
         ("x-amz-content-sha256".to_string(), content_sha256.clone()),
         ("x-amz-date".to_string(), amz_date.clone()),
     ];
+    // The signed-header list: the minimal set, plus `x-amz-security-token` for temp creds.
+    // `x-amz-security-token` sorts after `x-amz-date`, so it appends in canonical order.
+    let signed_headers = match creds.session_token {
+        Some(token) => {
+            headers.push(("x-amz-security-token".to_string(), token.to_string()));
+            format!("{OUTBOUND_SIGNED_HEADERS};x-amz-security-token")
+        }
+        None => OUTBOUND_SIGNED_HEADERS.to_string(),
+    };
     let canonical = canonical_request(
         method,
         path,
         query,
         &headers,
-        OUTBOUND_SIGNED_HEADERS,
+        &signed_headers,
         &content_sha256,
         double_encode_for(service),
     );
@@ -79,13 +101,14 @@ pub fn sign(
     );
     let scope = format!("{datestamp}/{region}/{service}/aws4_request");
     let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={OUTBOUND_SIGNED_HEADERS}, Signature={signature}",
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
         creds.access_key_id
     );
     Signed {
         authorization,
         amz_date,
         content_sha256,
+        security_token: creds.session_token.map(str::to_string),
     }
 }
 
@@ -577,6 +600,7 @@ mod tests {
         let creds = Creds {
             access_key_id: "AKIDEXAMPLE",
             secret_access_key: "secret-key",
+            session_token: None,
         };
         let now = 1_700_000_000_000;
         let body = b"Action=DescribeInstances&Version=2016-11-15";
@@ -631,6 +655,7 @@ mod tests {
         let creds = Creds {
             access_key_id: "AKID",
             secret_access_key: "sk",
+            session_token: None,
         };
         let now = 1_700_000_000_000;
         let (amz_date, datestamp) = format_amz_datetime(now);
@@ -678,5 +703,96 @@ mod tests {
     #[test]
     fn header_value_whitespace_is_collapsed() {
         assert_eq!(trim_header_value("  a   b  "), "a b");
+    }
+
+    #[test]
+    fn sign_without_session_token_lists_three_headers_and_no_token() {
+        let creds = Creds {
+            access_key_id: "AKID",
+            secret_access_key: "sk",
+            session_token: None,
+        };
+        let now = 1_700_000_000_000;
+        let signed = sign(
+            &creds,
+            "us-east-1",
+            "ec2",
+            "POST",
+            "ec2.amazonaws.com",
+            "/",
+            "",
+            b"",
+            now,
+        );
+        assert!(
+            signed
+                .authorization
+                .contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date,")
+        );
+        assert!(!signed.authorization.contains("x-amz-security-token"));
+        assert!(signed.security_token.is_none());
+    }
+
+    #[test]
+    fn sign_with_session_token_lists_four_headers_and_returns_token() {
+        let body = b"Action=DescribeInstances&Version=2016-11-15";
+        let now = 1_700_000_000_000;
+        let host = "ec2.amazonaws.com";
+        let with_token = Creds {
+            access_key_id: "AKID",
+            secret_access_key: "sk",
+            session_token: Some("the-session-token"),
+        };
+        let signed = sign(
+            &with_token,
+            "us-east-1",
+            "ec2",
+            "POST",
+            host,
+            "/",
+            "",
+            body,
+            now,
+        );
+        // The session token rides out, and joins the signed-header set after x-amz-date.
+        assert_eq!(signed.security_token.as_deref(), Some("the-session-token"));
+        assert!(
+            signed.authorization.contains(
+                "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token,"
+            )
+        );
+
+        // The signature must verify when the request carries x-amz-security-token (proving
+        // the token is genuinely part of the signed canonical request, not just appended to
+        // the SignedHeaders list).
+        let parsed = parse_authorization(&signed.authorization).unwrap();
+        assert_eq!(parsed.signed_headers.len(), 4);
+        let h = headers(&[
+            ("host", host),
+            ("x-amz-date", &signed.amz_date),
+            ("x-amz-content-sha256", &signed.content_sha256),
+            ("x-amz-security-token", "the-session-token"),
+        ]);
+        assert_eq!(
+            verify("sk", &parsed, "POST", "/", "", &h, body, now),
+            Ok(())
+        );
+        // Adding the token changes the signature relative to the no-token signing.
+        let without = sign(
+            &Creds {
+                access_key_id: "AKID",
+                secret_access_key: "sk",
+                session_token: None,
+            },
+            "us-east-1",
+            "ec2",
+            "POST",
+            host,
+            "/",
+            "",
+            body,
+            now,
+        );
+        assert_ne!(signed.authorization, without.authorization);
     }
 }

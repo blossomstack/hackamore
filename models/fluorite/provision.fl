@@ -36,8 +36,9 @@ union ProvisionAuth {
 struct ProvisionService {
     /// Service instance name (`Action.target`).
     target: String,
-    /// Normalization flavor, e.g. "github" | "generic".
-    flavor: String,
+    /// A tool-config hint — one of `github` | `git` | `aws` | `kubernetes` | `generic` —
+    /// telling the agent which native config to write for this service.
+    tool_hint: String,
     /// Consumer-facing address to point the tool at (empty if not configured).
     address: String,
     /// Whether hackamore injects the credential or the consumer must supply its own.

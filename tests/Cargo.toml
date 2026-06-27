@@ -13,6 +13,7 @@ hackamore-policy = { workspace = true }
 hackamore-control = { workspace = true }
 hackamore-gateway = { workspace = true }
 hackamore-agent = { workspace = true }
+hackamore = { path = "../cli", version = "0.1.0" }
 serde_json   = { workspace = true }
 http         = { workspace = true }
 bytes        = { workspace = true }
@@ -22,3 +23,4 @@ tokio        = { workspace = true }
 tempfile     = { workspace = true }
 hyper        = { workspace = true }
 hyper-util   = { workspace = true }
+base64       = { workspace = true }

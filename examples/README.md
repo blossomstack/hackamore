@@ -7,9 +7,9 @@ A worked hackamore server config:
 - **proxy_addr / admin_addr** — the agent-facing reverse proxy and the
   operator/orchestrator admin API. Bind the admin API to localhost only.
 - **services** — the upstream allowlist, routed by `Host`. Each entry names its
-  normalization `flavor` and its **`outbound`** auth stance: `"passthrough"` forwards the
-  consumer's own credential (filter-only), `{ "inject": "<cred-id>" }` swaps in the
-  target's real credential. An unmatched host is denied (fail closed).
+  **`outbound`** auth stance: `"passthrough"` forwards the consumer's own credential
+  (filter-only), `{ "bearer": "<cred-id>" }` swaps in the target's real credential. An
+  unmatched host is denied (fail closed).
 - **credentials** — logical id → real secret, referenced by a service's `inject`.
   Provision a real **GitHub App installation token** (short-lived, repo-scoped,
   revocable); it never leaves hackamore. The placeholder must be replaced before the proxy
@@ -18,7 +18,7 @@ A worked hackamore server config:
 There are no agents: a token is minted from a **policy document**. The example policy in
 `policy.reviewer-bot.json` may:
 
-1. **read** anything under `octocat`'s repos (`Read` on `repos/octocat/*/**`), and
+1. **read** anything under `octocat`'s repos (`GET` on `repos/octocat/*/**`), and
 2. **open pull requests** in `octocat`'s repos, but only against the `develop` base
    branch.
 

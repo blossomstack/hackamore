@@ -10,13 +10,13 @@ fn policy_from(json: &str) -> Policy {
 }
 
 /// Allow only reads. The target's credential is injected by the service config, not the
-/// policy. (`verb` is the open tagged union — a CRUD verb here.)
+/// policy. (`verb` is the open tagged union — a literal HTTP method here.)
 const READ_ONLY: &str = r#"{
     "rules": [
         { "effect": "Allow",
           "matches": {
               "targets": [],
-              "verbs": [ { "type": "Crud", "value": { "kind": "Read" } } ],
+              "verbs": [ { "type": "Method", "value": { "method": "GET" } } ],
               "resources": [], "conditions": []
           } }
     ]
@@ -28,7 +28,7 @@ const PR_TO_DEVELOP_ONLY: &str = r#"{
         { "effect": "Allow",
           "matches": {
               "targets": [],
-              "verbs": [ { "type": "Crud", "value": { "kind": "Create" } } ],
+              "verbs": [ { "type": "Method", "value": { "method": "POST" } } ],
               "resources": ["repos/*/*/pulls"],
               "conditions": [ { "type": "Equals", "value": { "field": "base", "value": "develop" } } ]
           } }
@@ -82,7 +82,7 @@ const OCTOCAT_READS: &str = r#"{
         { "effect": "Allow",
           "matches": {
               "targets": [], "conditions": [],
-              "verbs": [ { "type": "Crud", "value": { "kind": "Read" } } ],
+              "verbs": [ { "type": "Method", "value": { "method": "GET" } } ],
               "resources": ["repos/octocat/**"]
           } }
     ]

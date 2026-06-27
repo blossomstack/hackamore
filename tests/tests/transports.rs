@@ -2,7 +2,7 @@
 //! exercise: SSE streaming relay and fail-closed Host routing. (Per-service injection and
 //! AWS-query action gating live in `use_cases.rs`.)
 
-use hackamore_gateway::{Flavor, Outbound, Service};
+use hackamore_gateway::{Outbound, Service};
 use hackamore_models::policy::Policy;
 use hackamore_tests::{
     start_hackamore_services, start_hackamore_tls_services, start_mock_upstream,
@@ -17,12 +17,10 @@ fn allow_all() -> Policy {
     .expect("valid policy")
 }
 
-fn service(name: &str, host: &str, flavor: Flavor, credential: &str, upstream: &str) -> Service {
-    Service::new(name, host, upstream)
-        .with_flavor(flavor)
-        .with_outbound(Outbound::Bearer {
-            credential: credential.into(),
-        })
+fn service(name: &str, host: &str, credential: &str, upstream: &str) -> Service {
+    Service::new(name, host, upstream).with_outbound(Outbound::Bearer {
+        credential: credential.into(),
+    })
 }
 
 /// SSE transport: an event-stream response is relayed through hackamore with its
@@ -30,14 +28,8 @@ fn service(name: &str, host: &str, flavor: Flavor, credential: &str, upstream: &
 #[tokio::test]
 async fn sse_stream_is_relayed() {
     let upstream = start_mock_upstream().await;
-    let hackamore = start_hackamore_services(vec![service(
-        "events",
-        "*",
-        Flavor::Generic,
-        "svc-key",
-        &upstream.base_url,
-    )])
-    .await;
+    let hackamore =
+        start_hackamore_services(vec![service("events", "*", "svc-key", &upstream.base_url)]).await;
     hackamore.add_credential("svc-key", "real");
     let token = hackamore.mint_token(&allow_all(), 3600).await;
 
@@ -72,13 +64,7 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
         ca_pem: ca.to_string(),
     };
     let hackamore = start_hackamore_tls_services(
-        vec![service(
-            "svc",
-            "*",
-            Flavor::Generic,
-            "svc-key",
-            &upstream.base_url,
-        )],
+        vec![service("svc", "*", "svc-key", &upstream.base_url)],
         tls,
     )
     .await;
@@ -125,14 +111,8 @@ async fn tls_terminated_proxy_serves_https_and_publishes_ca() {
 #[tokio::test]
 async fn allowed_upgrade_is_tunneled_to_upstream() {
     let upstream = start_mock_upstream().await;
-    let hackamore = start_hackamore_services(vec![service(
-        "svc",
-        "*",
-        Flavor::Generic,
-        "svc-key",
-        &upstream.base_url,
-    )])
-    .await;
+    let hackamore =
+        start_hackamore_services(vec![service("svc", "*", "svc-key", &upstream.base_url)]).await;
     hackamore.add_credential("svc-key", "real");
     let token = hackamore.mint_token(&allow_all(), 3600).await;
 
@@ -186,7 +166,6 @@ async fn unrouted_host_is_denied() {
     let hackamore = start_hackamore_services(vec![service(
         "github",
         "api.github.com",
-        Flavor::Github,
         "github-app",
         &upstream.base_url,
     )])

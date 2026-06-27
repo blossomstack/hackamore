@@ -16,17 +16,40 @@ use hackamore_models::policy::{Condition, Effect, Match, Policy, Rule};
 use hackamore_models::verdict::{DenyReason, Verdict};
 use serde_json::Value;
 
+pub mod lint;
+
+/// A decision plus which rule produced it — the explainable form of [`decide`].
+/// `matched_rule` is the zero-based index into `Policy.rules`, or `None` when no rule
+/// matched and the verdict is the default-deny fallthrough.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trace {
+    pub verdict: Verdict,
+    pub matched_rule: Option<usize>,
+}
+
 /// Decide whether `action` is permitted under `policy`.
 ///
 /// Pure and total: every action yields either `Allow` (with obligations) or `Deny`
 /// (with a reason). The default, when no rule matches, is `Deny(NotAllowed)`.
 pub fn decide(action: &Action, policy: &Policy) -> Verdict {
-    for rule in &policy.rules {
+    decide_traced(action, policy).verdict
+}
+
+/// [`decide`], plus which rule decided. Same semantics (first match wins, default
+/// deny); the trace is for audit events, `policy test`, and the admin dry-run API.
+pub fn decide_traced(action: &Action, policy: &Policy) -> Trace {
+    for (index, rule) in policy.rules.iter().enumerate() {
         if rule_matches(rule, action) {
-            return verdict_for(rule);
+            return Trace {
+                verdict: verdict_for(rule),
+                matched_rule: Some(index),
+            };
         }
     }
-    Verdict::deny(DenyReason::NotAllowed)
+    Trace {
+        verdict: Verdict::deny(DenyReason::NotAllowed),
+        matched_rule: None,
+    }
 }
 
 /// Build the verdict a matched rule produces. An `Allow` is **bare** — the engine no
@@ -109,7 +132,7 @@ fn lookup<'a>(fields: &'a Value, path: &str) -> Option<&'a Value> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use hackamore_models::action::{Action, CrudKind, Resource, Verb};
+    use hackamore_models::action::{Action, Resource, Verb};
     use hackamore_models::policy::{
         Condition, Effect, EqualsCondition, ExistsCondition, Match, OneOfCondition, Policy, Rule,
     };
@@ -141,8 +164,8 @@ mod tests {
     fn pr_create() -> Action {
         Action::of(
             "github",
-            Verb::crud(CrudKind::Create),
-            Resource::of("repos/octocat/hello/pulls", "pull_request"),
+            Verb::method("POST"),
+            Resource::of("repos/octocat/hello/pulls"),
         )
     }
 
@@ -159,7 +182,7 @@ mod tests {
     fn matching_allow_rule_yields_bare_allow() {
         let policy = Policy {
             rules: vec![allow(Match {
-                verbs: vec![Verb::crud(CrudKind::Create)],
+                verbs: vec![Verb::method("POST")],
                 resources: vec!["repos/octocat/*/pulls".into()],
                 ..empty_match()
             })],
@@ -177,7 +200,7 @@ mod tests {
         let describe = Action::of(
             "aws-acct-a",
             Verb::action("ec2:DescribeInstances"),
-            Resource::of("", "root"),
+            Resource::of(""),
         );
         let policy = Policy {
             rules: vec![allow(Match {
@@ -190,7 +213,7 @@ mod tests {
         let terminate = Action::of(
             "aws-acct-a",
             Verb::action("ec2:TerminateInstances"),
-            Resource::of("", "root"),
+            Resource::of(""),
         );
         assert!(!decide(&terminate, &policy).is_allow());
     }
@@ -200,7 +223,7 @@ mod tests {
         let policy = Policy {
             rules: vec![
                 deny(Match {
-                    verbs: vec![Verb::crud(CrudKind::Create)],
+                    verbs: vec![Verb::method("POST")],
                     ..empty_match()
                 }),
                 allow(empty_match()),
@@ -218,14 +241,14 @@ mod tests {
         // Allow only reads; a create falls through to default-deny.
         let policy = Policy {
             rules: vec![allow(Match {
-                verbs: vec![Verb::crud(CrudKind::Read)],
+                verbs: vec![Verb::method("GET")],
                 ..empty_match()
             })],
         };
         let read = Action::of(
             "github",
-            Verb::crud(CrudKind::Read),
-            Resource::of("repos/octocat/hello", "repo"),
+            Verb::method("GET"),
+            Resource::of("repos/octocat/hello"),
         );
         assert!(decide(&read, &policy).is_allow());
         assert!(!decide(&pr_create(), &policy).is_allow());
@@ -236,7 +259,7 @@ mod tests {
         // May open PRs, but only against base "develop".
         let policy = Policy {
             rules: vec![allow(Match {
-                verbs: vec![Verb::crud(CrudKind::Create)],
+                verbs: vec![Verb::method("POST")],
                 resources: vec!["repos/*/*/pulls".into()],
                 conditions: vec![Condition::Equals(EqualsCondition {
                     field: "base".into(),
@@ -273,6 +296,40 @@ mod tests {
         assert!(decide(&ok, &policy).is_allow());
         assert!(!decide(&no_title, &policy).is_allow());
         assert!(!decide(&bad_base, &policy).is_allow());
+    }
+
+    #[test]
+    fn decide_traced_reports_the_matched_rule_index() {
+        let policy = Policy {
+            rules: vec![
+                allow(Match {
+                    verbs: vec![Verb::method("GET")],
+                    ..empty_match()
+                }),
+                deny(Match {
+                    verbs: vec![Verb::method("POST")],
+                    ..empty_match()
+                }),
+            ],
+        };
+        let denied = decide_traced(&pr_create(), &policy);
+        assert_eq!(denied.matched_rule, Some(1));
+        assert!(!denied.verdict.is_allow());
+
+        let read = Action::of(
+            "github",
+            Verb::method("GET"),
+            Resource::of("repos/octocat/hello"),
+        );
+        assert_eq!(decide_traced(&read, &policy).matched_rule, Some(0));
+
+        // Fallthrough: no rule matched, default-deny, no index.
+        let fallthrough = decide_traced(
+            &Action::of("github", Verb::method("DELETE"), Resource::of("x")),
+            &policy,
+        );
+        assert_eq!(fallthrough.matched_rule, None);
+        assert!(!fallthrough.verdict.is_allow());
     }
 
     #[test]

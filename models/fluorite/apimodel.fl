@@ -1,0 +1,95 @@
+/// hackamore's internal API representation (IR): the dialect-independent model every
+/// importer (OpenAPI, Smithy, …) produces and the engine, lint, and studio consume.
+/// Generic over wire protocol so REST and RPC services share one shape; no concrete
+/// service or description language is named here.
+///
+/// NOTE: fluorite resolves type names in a single flat namespace across all packages, so
+/// every type here has a name distinct from the (legacy) `catalog` package's types
+/// (`FieldOrigin` not `FieldSource`, `Field` not `FieldSpec`, `ApiOperation` not
+/// `Operation`). When `catalog` is retired these can reclaim the plain names.
+package apimodel;
+
+/// Marker payload for the REST protocol (carries no parameters).
+struct RestProtocol {}
+
+/// Marker payload for the git Smart-HTTP protocol (carries no parameters). The verb and
+/// resource are derived by the custom git-http normalizer (the `?service=` query / path
+/// suffix and the `{owner}/{repo}` of the path), not from any field here.
+struct GitProtocol {}
+
+struct NamedInParameter {
+    /// The body/query field carrying the operation name, e.g. "Action".
+    name: String,
+}
+
+struct NamedInHeader {
+    /// The header carrying the operation name, e.g. "x-amz-target".
+    name: String,
+    /// Keep only the part of the header value after the last occurrence of this string
+    /// (AWS json: "." turns "DynamoDB_20120810.PutItem" into "PutItem"). Empty = whole value.
+    suffix_after: String,
+}
+
+/// How requests to a service name their operation — a mechanism, never a service name.
+/// `Rest` = method + path; `Parameter` = the value of a body/query field (AWS query is
+/// `Parameter{name:"Action"}`); `Header` = a suffix of a header (AWS json is
+/// `Header{name:"x-amz-target"}`). (fluorite does not allow doc comments on variants.)
+#[type_tag = "type"]
+union Protocol {
+    Rest(RestProtocol),
+    Parameter(NamedInParameter),
+    Header(NamedInHeader),
+    Git(GitProtocol),
+}
+
+struct RestSelector {
+    /// The literal HTTP method the route is written against, e.g. "GET", "PATCH".
+    method: String,
+    /// Slash-joined, no leading slash, e.g. "repos/{owner}/{repo}/pulls".
+    path_template: String,
+}
+
+struct NamedSelector {
+    /// The operation name value, e.g. "DescribeInstances".
+    name: String,
+}
+
+/// Where an operation lives in the request space — `Route` is a REST method + path
+/// template; `Named` is an operation-name value read per the service [`Protocol`].
+/// (Variant names are unique across the package's unions — fluorite collides on a name
+/// shared between two unions, so the REST arm is `Route` here and `Rest` in `Protocol`.)
+#[type_tag = "type"]
+union Selector {
+    Route(RestSelector),
+    Named(NamedSelector),
+}
+
+/// Where a conditionable field is read from in a request.
+enum FieldOrigin {
+    Path,
+    Query,
+    Body,
+    Header,
+}
+
+/// One request attribute an operation exposes to conditional rules.
+struct Field {
+    name: String,
+    source: FieldOrigin,
+    summary: String,
+}
+
+/// One operation a policy can be written about.
+struct ApiOperation {
+    /// Stable id (operationId / Action name), e.g. "pulls.create".
+    id: String,
+    selector: Selector,
+    fields: Vec<Field>,
+    summary: String,
+}
+
+/// A service's full vocabulary in hackamore's own terms — what importers produce.
+struct ApiModel {
+    protocol: Protocol,
+    operations: Vec<ApiOperation>,
+}

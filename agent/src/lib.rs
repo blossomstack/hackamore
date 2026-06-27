@@ -61,7 +61,7 @@ pub fn render_env(doc: &ProvisionDoc) -> String {
         out.push_str(&format!(
             "# service '{}' [{}] {}\n",
             s.target,
-            s.flavor,
+            s.tool_hint,
             mode_hint(&s.mode)
         ));
         if !s.address.is_empty() {
@@ -87,7 +87,7 @@ pub fn render_status(doc: &ProvisionDoc) -> String {
         out.push_str(&format!(
             "  - {} [{}] {} → {}\n",
             s.target,
-            s.flavor,
+            s.tool_hint,
             mode_hint(&s.mode),
             addr
         ));
@@ -104,8 +104,11 @@ fn mode_hint(mode: &ProvisionMode) -> &'static str {
 
 /// Write native tool config for every service into `home` (an isolated directory). Returns
 /// the files written and records them in the manifest. Always writes `hackamore.env` and (when
-/// hackamore terminates TLS) the CA bundle; per service it writes git config (github), a
-/// kubeconfig (k8s), and/or an AWS profile (SigV4).
+/// hackamore terminates TLS) the CA bundle; per service the `tool_hint` selects which native
+/// config to write: `github` → `gh` hosts.yml, `git` → git credentials + `.gitconfig`,
+/// `kubernetes` → a kubeconfig, `aws` → an AWS profile, `generic` (or unknown) → nothing
+/// beyond the env. An AWS profile is *also* written whenever the auth is SigV4, regardless of
+/// the hint, so a SigV4 service is robust even if its hint is missing.
 pub fn write_configs(home: &Path, doc: &ProvisionDoc) -> std::io::Result<Vec<PathBuf>> {
     let mut written: Vec<PathBuf> = Vec::new();
     written.push(write(&home.join("hackamore.env"), &render_env(doc))?);
@@ -120,11 +123,17 @@ pub fn write_configs(home: &Path, doc: &ProvisionDoc) -> std::io::Result<Vec<Pat
     };
 
     for s in &doc.services {
-        match s.flavor.as_str() {
-            "github" => written.extend(write_github(home, s, ca_path.as_deref())?),
-            "k8s" => written.push(write_kubeconfig(home, s, ca_path.as_deref())?),
+        match s.tool_hint.as_str() {
+            // REST GitHub → only `gh` (its hosts.yml). git is a *separate* service/hint now.
+            "github" => written.push(write_gh(home, s)?),
+            // git-over-HTTPS → only the git credential store + `.gitconfig`.
+            "git" => written.extend(write_git(home, s, ca_path.as_deref())?),
+            "kubernetes" => written.push(write_kubeconfig(home, s, ca_path.as_deref())?),
+            // `aws` is handled by the SigV4 branch below (keeps the AWS path robust whether or
+            // not the hint is present); `generic`/anything else writes no tool files here.
             _ => {}
         }
+        // Always write an AWS profile when the auth is SigV4 — robust against a missing hint.
         if let ProvisionAuth::SigV4(a) = &s.auth {
             written.extend(write_aws(home, s, a, ca_path.as_deref())?);
         }
@@ -205,10 +214,27 @@ fn write_kubeconfig(
     write(&home.join(".kube").join("config"), &body)
 }
 
-/// Configure `git` and `gh` to use the hackamore token: the store-helper credential line
-/// (merged, not clobbered), a `.gitconfig` enabling that helper (+ CA when TLS), and a `gh`
-/// `hosts.yml` so `gh` authenticates to the hackamore-fronted host.
-fn write_github(
+/// Configure **`gh`** (the GitHub CLI) only: write `~/.config/gh/hosts.yml` so `gh`
+/// authenticates to the hackamore-fronted host with the launch token. This is the `github`
+/// tool hint (the REST GitHub service). git config is a *separate* concern handled by
+/// [`write_git`] under the `git` hint — splitting them keeps each tool's files scoped to the
+/// service that actually needs it.
+fn write_gh(home: &Path, s: &ProvisionService) -> std::io::Result<PathBuf> {
+    let token = bearer_token(s).unwrap_or_default();
+    let host = endpoint_host(s);
+    // gh reads the oauth token for this host from hosts.yml.
+    let hosts = format!(
+        "{host}:\n    oauth_token: {token}\n    git_protocol: https\n    user: x-access-token\n"
+    );
+    write(&home.join(".config").join("gh").join("hosts.yml"), &hosts)
+}
+
+/// Configure **`git`** (over HTTPS) only: the store-helper credential line (merged, not
+/// clobbered) carrying `https://x-access-token:<token>@<host>` — exactly the Basic-inbound
+/// shape hackamore accepts (the launch token in the Basic password slot) — plus a `.gitconfig`
+/// enabling the `store` helper (and trusting the CA, when hackamore terminates TLS). This is
+/// the `git` tool hint (the git-over-HTTPS service); `gh` config lives in [`write_gh`].
+fn write_git(
     home: &Path,
     s: &ProvisionService,
     ca: Option<&Path>,
@@ -216,8 +242,8 @@ fn write_github(
     let token = bearer_token(s).unwrap_or_default();
     let host = endpoint_host(s);
 
-    // 1. git store-helper credential line — merged idempotently so multiple github-flavored
-    //    services accumulate instead of overwriting one another.
+    // 1. git store-helper credential line — merged idempotently so multiple git services
+    //    accumulate instead of overwriting one another.
     let cred_line = format!("https://x-access-token:{token}@{host}");
     let creds = home.join(".git-credentials");
     let merged = merge_lines(&creds, &cred_line)?;
@@ -230,13 +256,7 @@ fn write_github(
     }
     let gitconfig = write(&home.join(".gitconfig"), &gitconfig)?;
 
-    // 3. gh hosts.yml — gh reads the oauth token for this host from here.
-    let hosts = format!(
-        "{host}:\n    oauth_token: {token}\n    git_protocol: https\n    user: x-access-token\n"
-    );
-    let gh = write(&home.join(".config").join("gh").join("hosts.yml"), &hosts)?;
-
-    Ok(vec![creds, gitconfig, gh])
+    Ok(vec![creds, gitconfig])
 }
 
 /// Write an AWS profile (dummy credential + hackamore endpoint) for the `aws` CLI / SDKs:
@@ -317,44 +337,46 @@ mod tests {
 
     fn svc(
         target: &str,
-        flavor: &str,
+        tool_hint: &str,
         auth: ProvisionAuth,
         mode: ProvisionMode,
     ) -> ProvisionService {
         ProvisionService {
             target: target.into(),
-            flavor: flavor.into(),
+            tool_hint: tool_hint.into(),
             address: String::new(),
             mode,
             auth,
         }
     }
 
+    /// A bearer-auth service carrying the shared launch token.
+    fn bearer_svc(target: &str, tool_hint: &str) -> ProvisionService {
+        svc(
+            target,
+            tool_hint,
+            ProvisionAuth::Bearer(BearerAuth {
+                token: "tok-abc".into(),
+            }),
+            ProvisionMode::Inject,
+        )
+    }
+
+    /// A doc covering every tool hint: a `github` (gh) service, a `git` service, a
+    /// `kubernetes` service, an `aws` (SigV4) service, and a `generic` service (no tool
+    /// files).
     fn doc_with_ca(ca: &str) -> ProvisionDoc {
         ProvisionDoc {
             hackamore_token: "tok-abc".into(),
             hackamore_ca: ca.into(),
             expires_at_ms: 12345,
             services: vec![
-                svc(
-                    "github",
-                    "github",
-                    ProvisionAuth::Bearer(BearerAuth {
-                        token: "tok-abc".into(),
-                    }),
-                    ProvisionMode::Inject,
-                ),
-                svc(
-                    "eks-prod",
-                    "k8s",
-                    ProvisionAuth::Bearer(BearerAuth {
-                        token: "tok-abc".into(),
-                    }),
-                    ProvisionMode::Inject,
-                ),
+                bearer_svc("github-api", "github"),
+                bearer_svc("github-git", "git"),
+                bearer_svc("eks-prod", "kubernetes"),
                 svc(
                     "aws-acct-a",
-                    "generic",
+                    "aws",
                     ProvisionAuth::SigV4(SigV4Auth {
                         access_key_id: "AKIADUMMY".into(),
                         secret_access_key: "dummy-secret".into(),
@@ -362,6 +384,7 @@ mod tests {
                     }),
                     ProvisionMode::Inject,
                 ),
+                bearer_svc("plain-api", "generic"),
             ],
         }
     }
@@ -378,11 +401,16 @@ mod tests {
     }
 
     #[test]
-    fn env_exports_token_and_lists_services() {
+    fn env_exports_token_and_lists_services_with_tool_hints() {
         let env = render_env(&doc());
         assert!(env.contains("export HACKAMORE_TOKEN='tok-abc'"));
-        assert!(env.contains("service 'github'"));
+        assert!(env.contains("service 'github-api'"));
         assert!(env.contains("service 'aws-acct-a'"));
+        // The tool hint (not the service name) is printed in the per-service comment.
+        assert!(env.contains("[github]"));
+        assert!(env.contains("[git]"));
+        assert!(env.contains("[kubernetes]"));
+        assert!(env.contains("[aws]"));
         // No CA → no CA-bundle exports.
         assert!(!env.contains("CA_BUNDLE"));
     }
@@ -417,6 +445,121 @@ mod tests {
 
         // Everything stayed under the isolated home.
         assert!(written.iter().all(|p| p.starts_with(&dir)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `github`-hint service writes the `gh` hosts.yml but NOT git-credentials/.gitconfig —
+    /// those belong to the separate `git` hint.
+    #[test]
+    fn github_hint_writes_gh_hosts_but_not_git_files() {
+        let dir = temp_home("gh-only");
+        let doc = ProvisionDoc {
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: String::new(),
+            expires_at_ms: 1,
+            services: vec![bearer_svc("github-api", "github")],
+        };
+        write_configs(&dir, &doc).unwrap();
+        let gh = std::fs::read_to_string(dir.join(".config").join("gh").join("hosts.yml")).unwrap();
+        assert!(gh.contains("oauth_token: tok-abc"));
+        // No git credential store or .gitconfig from a github-hint service.
+        assert!(!dir.join(".git-credentials").exists());
+        assert!(!dir.join(".gitconfig").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `git`-hint service writes git-credentials + .gitconfig but NOT the `gh` hosts.yml.
+    /// The credential line is exactly the Basic-inbound shape hackamore (P2) accepts:
+    /// `https://x-access-token:<token>@<host>`.
+    #[test]
+    fn git_hint_writes_git_files_but_not_gh_hosts() {
+        let dir = temp_home("git-only");
+        let doc = ProvisionDoc {
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: String::new(),
+            expires_at_ms: 1,
+            services: vec![bearer_svc("github-git", "git")],
+        };
+        write_configs(&dir, &doc).unwrap();
+        let creds = std::fs::read_to_string(dir.join(".git-credentials")).unwrap();
+        assert!(creds.contains("https://x-access-token:tok-abc@"));
+        let gitconfig = std::fs::read_to_string(dir.join(".gitconfig")).unwrap();
+        assert!(gitconfig.contains("helper = store"));
+        // No gh hosts.yml from a git-hint service.
+        assert!(!dir.join(".config").join("gh").join("hosts.yml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `kubernetes`-hint service writes a kubeconfig (and no git/gh/aws files).
+    #[test]
+    fn kubernetes_hint_writes_kubeconfig_only() {
+        let dir = temp_home("k8s-only");
+        let doc = ProvisionDoc {
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: String::new(),
+            expires_at_ms: 1,
+            services: vec![bearer_svc("eks-prod", "kubernetes")],
+        };
+        write_configs(&dir, &doc).unwrap();
+        let kube = std::fs::read_to_string(dir.join(".kube").join("config")).unwrap();
+        assert!(kube.contains("kind: Config"));
+        assert!(kube.contains("token: tok-abc"));
+        assert!(!dir.join(".git-credentials").exists());
+        assert!(!dir.join(".config").join("gh").join("hosts.yml").exists());
+        assert!(!dir.join(".aws").join("credentials").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `aws`-hint SigV4 service writes the AWS profile (dummy creds + endpoint).
+    #[test]
+    fn aws_hint_writes_aws_profile() {
+        let dir = temp_home("aws-only");
+        let doc = ProvisionDoc {
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: String::new(),
+            expires_at_ms: 1,
+            services: vec![svc(
+                "aws-ec2",
+                "aws",
+                ProvisionAuth::SigV4(SigV4Auth {
+                    access_key_id: "AKIADUMMY".into(),
+                    secret_access_key: "dummy-secret".into(),
+                    region: "us-east-1".into(),
+                }),
+                ProvisionMode::Inject,
+            )],
+        };
+        write_configs(&dir, &doc).unwrap();
+        let creds = std::fs::read_to_string(dir.join(".aws").join("credentials")).unwrap();
+        assert!(creds.contains("aws_access_key_id = AKIADUMMY"));
+        assert!(creds.contains("aws_secret_access_key = dummy-secret"));
+        let config = std::fs::read_to_string(dir.join(".aws").join("config")).unwrap();
+        assert!(config.contains("region = us-east-1"));
+        // No git/gh/k8s files from an aws-hint service.
+        assert!(!dir.join(".git-credentials").exists());
+        assert!(!dir.join(".kube").join("config").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `generic`-hint service (bearer) writes no native tool files — only `hackamore.env`
+    /// carries the token + endpoint.
+    #[test]
+    fn generic_hint_writes_no_tool_files() {
+        let dir = temp_home("generic-only");
+        let doc = ProvisionDoc {
+            hackamore_token: "tok-abc".into(),
+            hackamore_ca: String::new(),
+            expires_at_ms: 1,
+            services: vec![bearer_svc("plain-api", "generic")],
+        };
+        let written = write_configs(&dir, &doc).unwrap();
+        // Only hackamore.env (+ the manifest) was written — no tool config.
+        assert!(written.iter().any(|p| p.ends_with("hackamore.env")));
+        assert!(!dir.join(".git-credentials").exists());
+        assert!(!dir.join(".gitconfig").exists());
+        assert!(!dir.join(".config").join("gh").join("hosts.yml").exists());
+        assert!(!dir.join(".kube").join("config").exists());
+        assert!(!dir.join(".aws").join("credentials").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

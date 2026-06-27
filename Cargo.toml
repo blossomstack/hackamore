@@ -61,6 +61,12 @@ ring = "0.17"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+# gzip inflate for the CLI's bundled preset specs (pure-Rust miniz_oxide backend, no C deps).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# kubeconfig parsing for the k8s preset. serde_yaml is deprecated upstream but remains the
+# stable, ubiquitous serde YAML reader; the maintained forks (serde_yml) are themselves
+# now shim/unmaintained. We only read a kubeconfig, so the stable reader is the right call.
+serde_yaml = "0.9"
 
 # Test-only
 tempfile = "3"

@@ -6,14 +6,12 @@
       "name": "github",
       "host": "api.github.com",
       "upstream_base": "https://api.github.com",
-      "flavor": "github",
       "outbound": { "bearer": "github-app" }
     },
     {
       "name": "openai",
       "host": "api.openai.com",
       "upstream_base": "https://api.openai.com",
-      "flavor": "generic",
       "outbound": "passthrough"
     }
   ],
