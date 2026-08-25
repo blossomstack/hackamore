@@ -449,9 +449,18 @@ dependencies = [
 
 [[package]]
 name = "fluorite"
-version = "0.6.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07de58688519bd7bc434b8e95a4dde3046ace1e50f8165f6e0a80853b2663ba3"
+checksum = "d3ae4d88c3c3f0c96bcff37728d5f477ad68a73457129c017a0f00e627689943"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "fluorite"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90920e402381d0f936c36c5a7a31b6067e13e68449e90bc9b3a5b7c2c17a9e89"
 dependencies = [
  "serde",
 ]
@@ -468,7 +477,7 @@ dependencies = [
  "chumsky",
  "clap",
  "derive-new 0.7.0",
- "fluorite",
+ "fluorite 0.6.2",
  "logos",
  "serde",
 ]
@@ -691,7 +700,7 @@ name = "hackamore-models"
 version = "0.1.0"
 dependencies = [
  "derive-new 0.5.9",
- "fluorite",
+ "fluorite 0.9.0",
  "fluorite_codegen",
  "schemars",
  "serde",
