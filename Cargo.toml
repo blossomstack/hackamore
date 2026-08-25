@@ -25,7 +25,7 @@ hackamore-gateway = { path = "gateway", version = "0.1.0" }
 hackamore-agent = { path = "agent", version = "0.1.0" }
 
 # Protocol codegen
-fluorite         = "0.6.0"
+fluorite         = "0.9.0"
 fluorite_codegen = "0.6.0"
 
 # Core
