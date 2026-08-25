@@ -26,7 +26,7 @@ jobs:
       id-token: write # mint the OIDC token exchanged for a temp crates.io token
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -92,7 +92,7 @@ jobs:
           - runner: macos-latest # cross-compiled; Intel runners are being retired
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
